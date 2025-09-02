@@ -1,12 +1,12 @@
-# minbert Assignment
+# HW 3: minbert
 by Shuyan Zhou, Zhengbao Jiang, Ritam Dutt and Brendon Boldt
 
 This is an exercise in developing a minimalist version of BERT, adapted from CMU's [CS11-747: Neural Networks for NLP](http://www.phontron.com/class/nn4nlp2020/).
 
-In this assignment, you will implement some important components of the BERT model to better understanding its architecture. 
+In this homework, you will implement some important components of the BERT model to better understanding its architecture. 
 You will then perform sentence classification on ``sst`` dataset and ``cfimdb`` dataset with the BERT model.
 
-## Assignment Details
+## Homework Details
 
 ### Important Notes
 * Follow `setup.sh` to properly setup the environment and install dependencies.
