@@ -6,7 +6,7 @@ import os
 import sys
 import zipfile
 
-required_files = {'main.py', 'model.py', 'vocab.py', 'sst-dev-output.txt', 'sst-test-output.txt', 'cfimdb-dev-output.txt', 'cfimdb-test-output.txt'}
+required_files = {'main.py', 'model.py', 'vocab.py', 'sst-dev-output.txt', 'sst-test-output.txt', 'cfimdb-dev-output.txt', 'cfimdb-test-output.txt', 'run_exp.sh'}
 
 def check_file(file: str, check_aid: str):
     target_prefix = None
