@@ -37,13 +37,26 @@ class BertSentClassifier(torch.nn.Module):
             elif config.option == 'finetune':
                 param.requires_grad = True
 
-        # todo
-        raise NotImplementedError
+        # Dropout layer
+        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+        
+        # Classification head
+        self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, input_ids, attention_mask):
-        # todo
-        # the final bert contextualize embedding is the hidden state of [CLS] token (the first token)
-        raise NotImplementedError
+        # Get the BERT output
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        
+        # Get the [CLS] token representation
+        pooled_output = outputs['pooler_output']  # [batch_size, hidden_size]
+        
+        # Apply dropout
+        pooled_output = self.dropout(pooled_output)
+        
+        # Get logits through the classifier
+        logits = self.classifier(pooled_output)
+        
+        return logits
 
 # create a custom Dataset Class to be used for the dataloader
 class BertDataset(Dataset):
@@ -156,7 +169,7 @@ def save_model(model, optimizer, args, config, filepath):
     print(f"save the model to {filepath}")
 
 def train(args):
-    device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+    device = torch.device('mps') if args.use_gpu and torch.backends.mps.is_available() else torch.device('cpu')
     #### Load data
     # create the data and its corresponding datasets and dataloader
     train_data, num_labels = create_data(args.train, 'train')
@@ -225,7 +238,7 @@ def train(args):
 
 def test(args):
     with torch.no_grad():
-        device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+        device = torch.device('mps') if args.use_gpu and torch.backends.mps.is_available() else torch.device('cpu')
         saved = torch.load(args.filepath)
         config = saved['model_config']
         model = BertSentClassifier(config)
