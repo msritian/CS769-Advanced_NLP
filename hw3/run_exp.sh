@@ -61,50 +61,38 @@ python classifier.py \
     --weight_decay 0.01 \
     --seed 42
 
-# Step 2: Enhanced fine-tuning with gradual unfreezing
-## 2.1 Fine-tune on SST
+# Step 2: Fine-tuning with gradual unfreezing and discriminative learning rates
 PREF='sst'
 python classifier.py \
     --use_gpu \
     --option finetune \
     --lr 2e-5 \
-    --hidden_dropout_prob 0.1 \
+    --hidden_dropout_prob 0.2 \
     --epochs 5 \
     --batch_size 32 \
     --grad_accumulation_steps 1 \
     --warmup_ratio 0.1 \
     --max_length 128 \
-    --weight_decay 0.01 \
+    --weight_decay 0.05 \
     --seed 42 \
-    --train "data/${PREF}-train.txt" \
-    --dev "data/${PREF}-dev.txt" \
-    --test "data/${PREF}-test.txt" \
-    --dev_out "${CAMPUSID}/${PREF}-dev-output.txt" \
-    --test_out "${CAMPUSID}/${PREF}-test-output.txt" \
-    --filepath "${CAMPUSID}/${PREF}-model.pt" | tee ${CAMPUSID}/${PREF}-train-log.txt
+    --gradual_unfreeze \
+    --discriminative_lr
 
-##  2.2 Run experiments on CF-IMDB
 PREF='cfimdb'
 python classifier.py \
     --use_gpu \
     --option finetune \
     --lr 2e-5 \
-    --hidden_dropout_prob 0.1 \
-    --epochs 4 \
-    --batch_size 8 \
-    --grad_accumulation_steps 4 \
-    --warmup_ratio 0.06 \
+    --hidden_dropout_prob 0.2 \
+    --epochs 5 \
+    --batch_size 16 \
+    --grad_accumulation_steps 2 \
+    --warmup_ratio 0.1 \
     --max_length 256 \
-    --weight_decay 0.01 \
+    --weight_decay 0.05 \
     --seed 42 \
-    --train "data/${PREF}-train.txt" \
-    --dev "data/${PREF}-dev.txt" \
-    --test "data/${PREF}-test.txt" \
-    --dev_out "${CAMPUSID}/${PREF}-dev-output.txt" \
-    --test_out "${CAMPUSID}/${PREF}-test-output.txt" \
-    --filepath "${CAMPUSID}/${PREF}-model.pt" | tee ${CAMPUSID}/${PREF}-train-log.txt
-
-
+    --gradual_unfreeze \
+    --discriminative_lr
 
 # Step 3. Prepare submission:
 ##  3.1. Copy your code to the $CAMPUSID folder

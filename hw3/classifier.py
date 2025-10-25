@@ -216,10 +216,14 @@ class BertSentClassifier(torch.nn.Module):
         self.vat_eps = 1e-6
         self.vat_xi = 1e-6
         
+        # Initialize unfreezing parameters
+        self.total_layers = 12  # Total number of BERT layers
+        self.current_unfrozen_layer = self.total_layers - 1  # Start with the last layer unfrozen
+
     def _unfreeze_bert_layer(self, layer_idx):
         """Unfreeze a specific BERT layer with discriminative learning rates"""
         if 0 <= layer_idx < self.total_layers:
-            layer = self.bert_layers[layer_idx]
+            layer = self.bert.encoder.layer[layer_idx]
             for param in layer.parameters():
                 param.requires_grad = True
             
@@ -370,6 +374,37 @@ class BertSentClassifier(torch.nn.Module):
         logits = self.classifier_out(hidden)
         
         return F.log_softmax(logits, dim=-1)
+
+# Add VAT loss computation
+class VirtualAdversarialTraining:
+    def __init__(self, model, epsilon=1e-6, xi=10.0):
+        self.model = model
+        self.epsilon = epsilon
+        self.xi = xi
+
+    def generate_adversarial_perturbation(self, input_ids, attention_mask):
+        # Generate random noise
+        noise = torch.randn_like(input_ids, dtype=torch.float, requires_grad=True)
+        noise = noise / torch.norm(noise, dim=-1, keepdim=True)
+
+        # Forward pass with noise
+        perturbed_input = input_ids + self.xi * noise
+        logits = self.model(perturbed_input, attention_mask)
+        loss = F.cross_entropy(logits, logits.detach())
+
+        # Backpropagate to compute gradients
+        loss.backward()
+        noise_grad = noise.grad
+
+        # Normalize the gradient to create adversarial perturbation
+        perturbation = self.epsilon * noise_grad / torch.norm(noise_grad, dim=-1, keepdim=True)
+        return perturbation
+
+    def compute_vat_loss(self, input_ids, attention_mask):
+        perturbation = self.generate_adversarial_perturbation(input_ids, attention_mask)
+        perturbed_input = input_ids + perturbation
+        logits = self.model(perturbed_input, attention_mask)
+        return F.cross_entropy(logits, logits.detach())
 
 # create a custom Dataset Class to be used for the dataloader
 class BertDataset(Dataset):
@@ -635,7 +670,7 @@ def train(args):
 
         print(f"epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
     
-        # Average the best model states
+    # Average the best model states
     if len(model_states) > 1:
         avg_state = {}
         for key in model_states[0].keys():
