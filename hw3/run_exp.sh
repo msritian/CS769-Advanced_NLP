@@ -1,4 +1,19 @@
-# Run experiments on CFIMDB only
+# 1. Run experiments on SST
+PREF='sst'
+python classifier.py \
+    --use_gpu \
+    --option finetune \
+    --lr 1e-5 \
+    --hidden_dropout_prob 0.1 \
+    --epochs 5 \
+    --batch_size 32 \
+    --grad_accumulation_steps 1 \
+    --warmup_ratio 0.1 \
+    --max_length 128 \
+    --weight_decay 0.05 \
+    --seed 42
+
+# 2. Run experiments on CFIMDB
 PREF='cfimdb'
 python classifier.py \
     --use_gpu \

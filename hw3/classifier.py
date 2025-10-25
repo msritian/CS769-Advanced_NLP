@@ -32,6 +32,29 @@ class BertSentClassifier(torch.nn.Module):
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.config = config
 
+        if config.option == 'pretrain':
+            for param in self.bert.parameters():
+                param.requires_grad = False
+        elif config.option == 'finetune':
+            for param in self.bert.parameters():
+                param.requires_grad = True
+
+        # Enhanced architecture for CFIMDB
+        self.attention = torch.nn.Linear(config.hidden_size, 1)
+        
+        # Two-stage classifier with higher capacity
+        self.classifier1 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size * 2)
+        self.classifier2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
+        self.classifier_out = torch.nn.Linear(config.hidden_size, config.num_labels)
+        
+        # Normalization and regularization
+        self.layer_norm1 = torch.nn.LayerNorm(config.hidden_size * 2)
+        self.layer_norm2 = torch.nn.LayerNorm(config.hidden_size)
+        self.dropout = torch.nn.Dropout(0.1)
+        
+        # Activation
+        self.gelu = torch.nn.GELU()
+
         # Set up parameters based on mode
         if config.option == 'pretrain':
             for param in self.bert.parameters():
