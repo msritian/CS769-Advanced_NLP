@@ -1,0 +1,47 @@
+args: {'train': 'data/sst-train.txt', 'dev': 'data/sst-dev.txt', 'test': 'data/sst-test.txt', 'dev_out': '9088915203/sst-dev-output.txt', 'test_out': '9088915203/sst-test-output.txt', 'filepath': '9088915203/sst-model.pt', 'pretrained_model': 'bert-sst-mlm.pt', 'option': 'finetune', 'seed': 11711, 'epochs': 3, 'use_gpu': True, 'gradual_unfreeze': True, 'discriminative_lr': True, 'patience': 4, 'lr': 2e-05, 'batch_size': 32, 'hidden_dropout_prob': 0.1, 'warmup_ratio': 0.06, 'max_length': 256}
+Using device: cuda
+load 8544 data from data/sst-train.txt
+load 1101 data from data/sst-dev.txt
+
+📦 Loading pre-trained MLM model from: bert-sst-mlm.pt
+✅ Successfully loaded 0 BERT parameters from pre-training
+
+================================================================================
+Training Configuration:
+  Option: finetune
+  Epochs: 3
+  Learning Rate: 2e-05
+  Batch Size: 32
+  Discriminative LR: True
+  Gradual Unfreeze: True
+  Num Training Steps: 801
+  Num Warmup Steps: 48
+================================================================================
+
+Epoch 0 | Loss: 1.3450 | Train Acc: 0.5864 | Dev Acc: 0.4923 | Dev F1: 0.4231
+💾 Saved model to 9088915203/sst-model.pt
+✅ New best! Dev Acc: 0.4923
+Epoch 1 | Loss: 1.1387 | Train Acc: 0.6731 | Dev Acc: 0.4995 | Dev F1: 0.4851
+💾 Saved model to 9088915203/sst-model.pt
+✅ New best! Dev Acc: 0.4995
+🔓 Unfroze BERT layer 10
+Epoch 2 | Loss: 1.0044 | Train Acc: 0.8015 | Dev Acc: 0.5195 | Dev F1: 0.5043
+💾 Saved model to 9088915203/sst-model.pt
+✅ New best! Dev Acc: 0.5195
+
+📊 Averaging 3 best checkpoints...
+💾 Saved model to 9088915203/sst-model.pt
+✅ Averaged model saved!
+Loaded model from 9088915203/sst-model.pt
+load 1101 data from data/sst-dev.txt
+load 2210 data from data/sst-test.txt
+
+================================================================================
+RESULTS
+================================================================================
+Dev Accuracy:  0.5195
+Dev F1 Score:  0.5043
+Test Accuracy: 0.5421
+Test F1 Score: 0.5230
+================================================================================
+

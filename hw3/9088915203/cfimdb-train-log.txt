@@ -1,0 +1,49 @@
+args: {'train': 'data/cfimdb-train.txt', 'dev': 'data/cfimdb-dev.txt', 'test': 'data/cfimdb-test.txt', 'dev_out': '9088915203/cfimdb-dev-output.txt', 'test_out': '9088915203/cfimdb-test-output.txt', 'filepath': '9088915203/cfimdb-model.pt', 'pretrained_model': 'bert-cfimdb-mlm.pt', 'option': 'finetune', 'seed': 11711, 'epochs': 4, 'use_gpu': True, 'gradual_unfreeze': True, 'discriminative_lr': True, 'patience': 6, 'lr': 2e-05, 'batch_size': 32, 'hidden_dropout_prob': 0.1, 'warmup_ratio': 0.06, 'max_length': 256}
+Using device: cuda
+load 1707 data from data/cfimdb-train.txt
+load 245 data from data/cfimdb-dev.txt
+
+📦 Loading pre-trained MLM model from: bert-cfimdb-mlm.pt
+✅ Successfully loaded 0 BERT parameters from pre-training
+
+================================================================================
+Training Configuration:
+  Option: finetune
+  Epochs: 4
+  Learning Rate: 2e-05
+  Batch Size: 32
+  Discriminative LR: True
+  Gradual Unfreeze: True
+  Num Training Steps: 216
+  Num Warmup Steps: 12
+================================================================================
+
+Epoch 0 | Loss: 0.5216 | Train Acc: 0.9426 | Dev Acc: 0.9224 | Dev F1: 0.9223
+💾 Saved model to 9088915203/cfimdb-model.pt
+✅ New best! Dev Acc: 0.9224
+Epoch 1 | Loss: 0.2664 | Train Acc: 0.9889 | Dev Acc: 0.9347 | Dev F1: 0.9346
+💾 Saved model to 9088915203/cfimdb-model.pt
+✅ New best! Dev Acc: 0.9347
+🔓 Unfroze BERT layer 10
+Epoch 2 | Loss: 0.2278 | Train Acc: 0.9947 | Dev Acc: 0.9469 | Dev F1: 0.9469
+💾 Saved model to 9088915203/cfimdb-model.pt
+✅ New best! Dev Acc: 0.9469
+Epoch 3 | Loss: 0.2132 | Train Acc: 0.9983 | Dev Acc: 0.9590 | Dev F1: 0.9590
+💾 Saved model to 9088915203/cfimdb-model.pt
+✅ New best! Dev Acc: 0.9590
+
+📊 Averaging 4 best checkpoints...
+💾 Saved model to 9088915203/cfimdb-model.pt
+✅ Averaged model saved!
+Loaded model from 9088915203/cfimdb-model.pt
+load 245 data from data/cfimdb-dev.txt
+load 488 data from data/cfimdb-test.txt
+
+================================================================================
+RESULTS
+================================================================================
+Dev Accuracy:  0.9590
+Dev F1 Score:  0.9590
+Test Accuracy: 0.5164
+Test F1 Score: 0.3405
+================================================================================
