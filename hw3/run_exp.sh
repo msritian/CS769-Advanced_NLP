@@ -1,31 +1,31 @@
 # 1. Run experiments on SST
-PREF='sst'
-python classifier.py \
-    --use_gpu \
-    --option finetune \
-    --lr 1e-5 \
-    --hidden_dropout_prob 0.1 \
-    --epochs 5 \
-    --batch_size 32 \
-    --grad_accumulation_steps 1 \
-    --warmup_ratio 0.1 \
-    --max_length 128 \
-    --weight_decay 0.05 \
-    --seed 42
+# PREF='sst'
+# python classifier.py \
+#     --use_gpu \
+#     --option finetune \
+#     --lr 1e-5 \
+#     --hidden_dropout_prob 0.1 \
+#     --epochs 5 \
+#     --batch_size 32 \
+#     --grad_accumulation_steps 1 \
+#     --warmup_ratio 0.1 \
+#     --max_length 128 \
+#     --weight_decay 0.05 \
+#     --seed 42
 
 # 2. Run experiments on CFIMDB
 PREF='cfimdb'
 python classifier.py \
     --use_gpu \
     --option finetune \
-    --lr 2e-5 \
-    --hidden_dropout_prob 0.1 \
-    --epochs 4 \
-    --batch_size 16 \
-    --grad_accumulation_steps 2 \
-    --warmup_ratio 0.06 \
-    --max_length 256 \
-    --weight_decay 0.01 \
+    --lr 1e-5 \
+    --hidden_dropout_prob 0.2 \
+    --epochs 6 \
+    --batch_size 8 \
+    --grad_accumulation_steps 4 \
+    --warmup_ratio 0.1 \
+    --max_length 512 \
+    --weight_decay 0.02 \
     --seed 42
 CAMPUSID='9088915203'
 mkdir -p $CAMPUSID

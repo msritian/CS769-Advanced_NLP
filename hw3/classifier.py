@@ -174,30 +174,85 @@ class BertSentClassifier(torch.nn.Module):
             for param in self.bert.parameters():
                 param.requires_grad = True
 
-        # Attention mechanism for sequence weighting
-        self.attention = torch.nn.Linear(config.hidden_size, 1)
+        # Multi-head self-attention for better feature extraction
+        self.attention_heads = 4
+        self.attention = nn.ModuleList([
+            torch.nn.Linear(config.hidden_size, 1) 
+            for _ in range(self.attention_heads)
+        ])
         
-        # Two-stage classifier with higher capacity
+        # Feature fusion layers
+        self.feature_fusion = torch.nn.Linear(config.hidden_size * (self.attention_heads + 2), config.hidden_size * 2)
+        
+        # Three-stage hierarchical classifier
         self.classifier1 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size * 2)
         self.classifier2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.classifier_out = torch.nn.Linear(config.hidden_size, config.num_labels)
         
-        # Normalization and regularization
+        # Enhanced normalization
         self.layer_norm1 = torch.nn.LayerNorm(config.hidden_size * 2)
         self.layer_norm2 = torch.nn.LayerNorm(config.hidden_size)
         self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
         self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
         
-        # Dropout layers with different rates
-        self.dropout1 = torch.nn.Dropout(0.1)
-        self.dropout2 = torch.nn.Dropout(0.15)
+        # Adaptive dropout
+        self.dropout1 = torch.nn.Dropout(0.2)  # Increased dropout for better regularization
+        self.dropout2 = torch.nn.Dropout(0.25)
+        self.feature_dropout = torch.nn.Dropout(0.15)
         
-        # Activation functions
+        # Advanced activation functions
         self.gelu = torch.nn.GELU()
-        self.tanh = torch.nn.Tanh()
+        self.mish = lambda x: x * torch.tanh(F.softplus(x))
 
     def forward(self, input_ids, attention_mask):
-        # Get BERT outputs
+        # Get BERT outputs with gradient checkpointing for memory efficiency
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        hidden_states = outputs[0]  # [batch_size, seq_len, hidden_size]
+        
+        # Multi-head attention processing
+        attention_outputs = []
+        for attention_layer in self.attention:
+            # Calculate attention weights for each head
+            attn = attention_layer(hidden_states)  # [batch_size, seq_len, 1]
+            attn_weights = torch.tanh(attn).squeeze(-1)  # [batch_size, seq_len]
+            attn_weights = attn_weights * attention_mask  # Apply mask
+            attn_weights = F.softmax(attn_weights, dim=1)  # Normalize
+            
+            # Get attention-weighted representation
+            attn_output = torch.bmm(attn_weights.unsqueeze(1), hidden_states).squeeze(1)
+            attention_outputs.append(attn_output)
+        
+        # Get CLS token representation and mean pooling
+        cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
+        mean_output = (hidden_states * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1).clamp(min=1e-9)
+        
+        # Concatenate all features
+        attention_concat = torch.cat(attention_outputs, dim=-1)  # Combine all attention heads
+        combined = torch.cat([cls_output, mean_output, attention_concat], dim=-1)
+        
+        # Feature fusion with skip connection
+        fused = self.feature_fusion(combined)
+        fused = self.feature_dropout(fused)
+        fused = self.layer_norm1(fused)
+        
+        # First classification stage with residual connection
+        hidden = self.classifier1(fused)
+        hidden = self.mish(hidden)
+        hidden = self.batch_norm1(hidden)
+        hidden = self.dropout1(hidden)
+        hidden = hidden + fused  # residual connection
+        
+        # Second classification stage
+        hidden = self.classifier2(hidden)
+        hidden = self.mish(hidden)
+        hidden = self.layer_norm2(hidden)
+        hidden = self.batch_norm2(hidden)
+        hidden = self.dropout2(hidden)
+        
+        # Final classification
+        logits = self.classifier_out(hidden)
+        
+        return F.log_softmax(logits, dim=-1)
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
         
