@@ -11,7 +11,10 @@ PREF='sst'
 python classifier.py \
     --use_gpu \
     --option finetune \
-    --lr 1e-5 \
+    --lr 2e-5 \
+    --hidden_dropout_prob 0.2 \
+    --epochs 5 \
+    --batch_size 32 \
     --seed 1234 \
     --train "data/${PREF}-train.txt" \
     --dev "data/${PREF}-dev.txt" \
@@ -38,10 +41,10 @@ python classifier.py \
 
 # Step 3. Prepare submission:
 ##  3.1. Copy your code to the $CAMPUSID folder
-for file in *.py; do cp $file ${CAMPUSID}/ done
-for file in *.sh; do cp $file ${CAMPUSID}/ done
-for file in *.md; do cp $file ${CAMPUSID}/ done
-for file in *.txt; do cp $file ${CAMPUSID}/ done
+for file in *.py; do cp "$file" "${CAMPUSID}/"; done
+for file in *.sh; do cp "$file" "${CAMPUSID}/"; done
+for file in *.md; do cp "$file" "${CAMPUSID}/"; done
+for file in *.txt; do cp "$file" "${CAMPUSID}/"; done
 
 ##  3.2. Compress the $CAMPUSID folder to $CAMPUSID.zip (containing only .py/.txt/.pdf/.sh files)
 python prepare_submit.py ${CAMPUSID} ${CAMPUSID}

@@ -37,24 +37,48 @@ class BertSentClassifier(torch.nn.Module):
             elif config.option == 'finetune':
                 param.requires_grad = True
 
-        # Dropout layer
-        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+        # Improved architecture with additional layers
+        self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
+        self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
-        # Classification head
+        # Two-layer classifier with batch normalization
+        # Note: We use 2*hidden_size because we concatenate [CLS] and avg pooled
+        self.dense = torch.nn.Linear(2*config.hidden_size, config.hidden_size)
+        self.batch_norm = torch.nn.BatchNorm1d(config.hidden_size)
+        self.activation = torch.nn.GELU()
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, input_ids, attention_mask):
-        # Get the BERT output
+        # Get the BERT output with all hidden states
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         
-        # Get the [CLS] token representation
+        # Get both the pooled output and last hidden state
         pooled_output = outputs['pooler_output']  # [batch_size, hidden_size]
+        last_hidden_state = outputs['last_hidden_state']  # [batch_size, seq_len, hidden_size]
         
-        # Apply dropout
-        pooled_output = self.dropout(pooled_output)
+        # Average pool the sequence representation (excluding [CLS] and [SEP])
+        # Create attention weights from attention_mask
+        seq_mask = attention_mask.unsqueeze(-1)  # [batch_size, seq_len, 1]
+        seq_masked = last_hidden_state * seq_mask  # [batch_size, seq_len, hidden_size]
+        seq_sum = seq_masked.sum(dim=1)  # [batch_size, hidden_size]
+        seq_len = seq_mask.sum(dim=1)  # [batch_size, 1]
+        avg_pooled = seq_sum / (seq_len + 1e-8)  # [batch_size, hidden_size]
+        
+        # Concatenate both representations
+        combined = torch.cat([pooled_output, avg_pooled], dim=-1)  # [batch_size, 2*hidden_size]
+        
+        # Improved forward pass with additional layers
+        combined = self.dropout1(combined)
+        hidden = self.dense(combined)
+        hidden = self.batch_norm(hidden)
+        hidden = self.activation(hidden)
+        hidden = self.dropout2(hidden)
         
         # Get logits through the classifier
-        logits = self.classifier(pooled_output)
+        logits = self.classifier(hidden)
+        
+        # Apply log softmax
+        logits = F.log_softmax(logits, dim=-1)
         
         return logits
 
@@ -176,6 +200,9 @@ def train(args):
         device = torch.device('mps')
     else:
         device = torch.device('cpu')
+    
+    # Set seeds for reproducibility
+    seed_everything(args.seed)
     #### Load data
     # create the data and its corresponding datasets and dataloader
     train_data, num_labels = create_data(args.train, 'train')
@@ -207,6 +234,16 @@ def train(args):
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_acc = 0
 
+    # Create learning rate scheduler with warmup
+    num_training_steps = len(train_dataloader) * args.epochs
+    num_warmup_steps = num_training_steps // 10  # 10% of training steps for warmup
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, 
+                                                  total_steps=num_training_steps,
+                                                  pct_start=0.1)  # 10% warmup
+    
+    # Lists to store model states for averaging
+    model_states = []
+    
     ## run for the specified number of epochs
     for epoch in range(args.epochs):
         model.train()
@@ -225,7 +262,12 @@ def train(args):
             loss = F.nll_loss(logits, b_labels.view(-1), reduction='sum') / args.batch_size
 
             loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            
             optimizer.step()
+            scheduler.step()
 
             train_loss += loss.item()
             num_batches += 1
@@ -238,8 +280,25 @@ def train(args):
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
             save_model(model, optimizer, args, config, args.filepath)
+            # Store model state for averaging
+            model_states.append({k: v.cpu().clone() for k, v in model.state_dict().items()})
+            # Keep only the best 3 model states
+            if len(model_states) > 3:
+                model_states.pop(0)
 
         print(f"epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
+    
+    # Average the best model states
+    if len(model_states) > 1:
+        avg_state = model_states[0]
+        for state in model_states[1:]:
+            for key in avg_state:
+                avg_state[key] += state[key]
+        for key in avg_state:
+            avg_state[key] /= len(model_states)
+        
+        model.load_state_dict(avg_state)
+        save_model(model, optimizer, args, config, args.filepath)
 
 
 def test(args):
