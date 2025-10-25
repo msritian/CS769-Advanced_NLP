@@ -741,6 +741,10 @@ def get_args():
     parser.add_argument("--seed", type=int, default=11711)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--use_gpu", action='store_true')
+    parser.add_argument("--gradual_unfreeze", action='store_true',
+                        help='Enable gradual unfreezing of BERT layers during fine-tuning')
+    parser.add_argument("--discriminative_lr", action='store_true',
+                        help='Enable discriminative learning rates for different BERT layers')
     
     # Optimization arguments
     parser.add_argument("--lr", type=float, default=2e-5,
