@@ -46,6 +46,12 @@ for file in *.sh; do cp "$file" "${CAMPUSID}/"; done
 for file in *.md; do cp "$file" "${CAMPUSID}/"; done
 for file in *.txt; do cp "$file" "${CAMPUSID}/"; done
 
+# Copy specific required files if they exist in parent directory
+cp sanity_check.data "${CAMPUSID}/" 2>/dev/null || :
+cp README.md "${CAMPUSID}/" 2>/dev/null || :
+cp structure.md "${CAMPUSID}/" 2>/dev/null || :
+cp setup.py "${CAMPUSID}/" 2>/dev/null || :
+
 ##  3.2. Compress the $CAMPUSID folder to $CAMPUSID.zip (containing only .py/.txt/.pdf/.sh files)
 python prepare_submit.py ${CAMPUSID} ${CAMPUSID}
 ##  3.3. Submit the zip file to Canvas! Congrats!
