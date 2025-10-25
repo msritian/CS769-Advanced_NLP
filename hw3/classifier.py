@@ -227,31 +227,36 @@ def train(args):
     model = model.to(device)
 
     lr = args.lr
-    ## specify the optimizer with layer-wise learning rate decay
-    # Group parameters by layers for different learning rates
-    no_decay = ['bias', 'LayerNorm.weight']
+    ## specify the optimizer with weight decay differentiation
+    # Parameters that will use weight decay
+    decay_parameters = [p for n, p in model.named_parameters() 
+                       if not any(nd in n for nd in ['bias', 'LayerNorm.weight'])]
+    # Parameters that won't use weight decay
+    no_decay_parameters = [p for n, p in model.named_parameters() 
+                          if any(nd in n for nd in ['bias', 'LayerNorm.weight'])]
     
-    # Create parameter groups with different learning rates
-    optimizer_grouped_parameters = [
-        {
-            'params': [p for n, p in model.named_parameters() 
-                      if not any(nd in n for nd in no_decay)],
-            'weight_decay': 0.01,
-            'lr': lr
-        },
-        {
-            'params': [p for n, p in model.named_parameters() 
-                      if any(nd in n for nd in no_decay)],
-            'weight_decay': 0.0,
-            'lr': lr
-        }
-    ]
+    # Verify we have parameters before creating groups
+    optimizer_grouped_parameters = []
+    if decay_parameters:
+        optimizer_grouped_parameters.append({
+            'params': decay_parameters,
+            'weight_decay': 0.01
+        })
+    if no_decay_parameters:
+        optimizer_grouped_parameters.append({
+            'params': no_decay_parameters,
+            'weight_decay': 0.0
+        })
     
     # Create optimizer groups with different learning rates
     optimizer_grouped_parameters = []
 
     
-    optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
+    if not optimizer_grouped_parameters:
+        # Fallback if no parameters were found
+        optimizer = AdamW(model.parameters(), lr=lr)
+    else:
+        optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
     best_dev_acc = 0
 
     # Create learning rate scheduler with warmup
