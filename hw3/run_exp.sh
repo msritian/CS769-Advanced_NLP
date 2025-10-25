@@ -1,16 +1,16 @@
-# Step 0##  2.1. Run experiments on SST
-PREF='sst'
+# Run experiments on CFIMDB only
+PREF='cfimdb'
 python classifier.py \
     --use_gpu \
     --option finetune \
-    --lr 1e-5 \
-    --hidden_dropout_prob 0.2 \
-    --epochs 5 \
-    --batch_size 32 \
-    --grad_accumulation_steps 1 \
-    --warmup_ratio 0.1 \
-    --max_length 128 \
-    --weight_decay 0.05 \
+    --lr 2e-5 \
+    --hidden_dropout_prob 0.1 \
+    --epochs 4 \
+    --batch_size 16 \
+    --grad_accumulation_steps 2 \
+    --warmup_ratio 0.06 \
+    --max_length 256 \
+    --weight_decay 0.01 \
     --seed 42
 CAMPUSID='9088915203'
 mkdir -p $CAMPUSID

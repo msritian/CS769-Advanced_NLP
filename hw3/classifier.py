@@ -47,30 +47,42 @@ class BertSentClassifier(torch.nn.Module):
         self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
         self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
-        # Simplified but effective architecture
+        # Enhanced architecture for CFIMDB
         self.hidden_size = config.hidden_size
         
-        # Attention for sequence weighting
-        self.attention = torch.nn.Linear(config.hidden_size, 1)
+        # Multi-head self attention for better long sequence handling
+        self.num_heads = 8
+        self.head_dim = config.hidden_size // self.num_heads
+        self.attention_query = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.attention_key = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.attention_value = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        self.attention_out = torch.nn.Linear(config.hidden_size, config.hidden_size)
         
-        # First transformation with larger hidden size
-        self.dense1 = torch.nn.Linear(config.hidden_size * 3, config.hidden_size * 2)
-        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
+        # Hierarchical pooling
+        self.local_attention = torch.nn.Linear(config.hidden_size, 1)
+        self.global_attention = torch.nn.Linear(config.hidden_size, 1)
         
-        # Second transformation
+        # Feature transformation layers
+        self.dense1 = torch.nn.Linear(config.hidden_size * 4, config.hidden_size * 2)  # Increased for better capacity
         self.dense2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
+        
+        # Normalization and regularization
+        self.layer_norm1 = torch.nn.LayerNorm(config.hidden_size)
+        self.layer_norm2 = torch.nn.LayerNorm(config.hidden_size * 2)
+        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
         self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
         
-        # Final layers
-        self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
-        self.dropout1 = torch.nn.Dropout(0.2)
-        self.dropout2 = torch.nn.Dropout(0.2)
+        self.dropout_attn = torch.nn.Dropout(0.1)  # Attention dropout
+        self.dropout1 = torch.nn.Dropout(0.1)
+        self.dropout2 = torch.nn.Dropout(0.1)
         
-        # Classifier
-        self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
+        # Classifier with larger intermediate
+        self.classifier_intermediate = torch.nn.Linear(config.hidden_size, config.hidden_size * 2)
+        self.classifier = torch.nn.Linear(config.hidden_size * 2, config.num_labels)
         
-        # Activation
-        self.activation = torch.nn.GELU()
+        # Activation functions
+        self.gelu = torch.nn.GELU()
+        self.tanh = torch.nn.Tanh()
 
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs
@@ -121,23 +133,37 @@ class BertSentClassifier(torch.nn.Module):
         sum_embeddings = (hidden_states * mask_expanded).sum(1)  # [batch_size, hidden_size]
         avg_embeddings = sum_embeddings / mask_expanded.sum(1).clamp(min=1e-9)  # [batch_size, hidden_size]
         
-        # 5. Combine all features
-        combined = torch.cat([cls_output, weighted_output, avg_embeddings], dim=1)  # [batch_size, hidden_size*3]
+        # Global attention over the local contexts
+        global_weights = self.global_attention(context)  # [batch_size, seq_len, 1]
+        global_weights = global_weights.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
+        global_weights = F.softmax(global_weights, dim=1)
+        global_context = torch.sum(global_weights * context, dim=1)  # [batch_size, hidden_size]
         
-        # 6. First transformation
+        # Get CLS token and mean pooling
+        cls_output = hidden_states[:, 0]
+        mean_output = (hidden_states * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1).clamp(min=1e-9)
+        
+        # Combine all representations
+        combined = torch.cat([cls_output, local_context, global_context, mean_output], dim=1)  # [batch_size, hidden_size*4]
+        
+        # First dense transformation
         hidden = self.dropout1(combined)
         hidden = self.dense1(hidden)
+        hidden = self.layer_norm2(hidden)
         hidden = self.batch_norm1(hidden)
-        hidden = self.activation(hidden)
+        hidden = self.gelu(hidden)
         
-        # 7. Second transformation
+        # Second dense transformation
         hidden = self.dropout2(hidden)
         hidden = self.dense2(hidden)
+        hidden = self.layer_norm1(hidden)
         hidden = self.batch_norm2(hidden)
-        hidden = self.activation(hidden)
+        hidden = self.gelu(hidden)
         
-        # 8. Final normalization and classification
-        hidden = self.layer_norm(hidden)
+        # Classification with intermediate layer
+        hidden = self.classifier_intermediate(hidden)
+        hidden = self.gelu(hidden)
+        hidden = self.dropout2(hidden)
         logits = self.classifier(hidden)
         
         return F.log_softmax(logits, dim=-1)
