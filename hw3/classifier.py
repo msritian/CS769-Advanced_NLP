@@ -58,9 +58,17 @@ class BertSentClassifier(torch.nn.Module):
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        # The BERT model returns hidden states directly
-        hidden_states = outputs.last_hidden_state  # [batch_size, seq_len, hidden_size]
-        pooled_output = outputs.pooler_output if hasattr(outputs, 'pooler_output') else hidden_states[:, 0]
+        
+        # Handle different possible output formats
+        if isinstance(outputs, dict):
+            hidden_states = outputs.get('last_hidden_state', outputs.get('hidden_states'))
+        elif isinstance(outputs, tuple):
+            hidden_states = outputs[0]
+        else:
+            hidden_states = outputs  # Assume it's the hidden states directly
+            
+        # Get pooled output - either from pooler or use CLS token
+        pooled_output = outputs.get('pooler_output', hidden_states[:, 0])
 
         # 1. CLS token representation
         cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
@@ -296,6 +304,10 @@ def train(args):
     
     ## run for the specified number of epochs
     for epoch in range(args.epochs):
+        # Clear GPU memory at the start of each epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         model.train()
         train_loss = 0
         num_batches = 0
@@ -311,16 +323,9 @@ def train(args):
             if step % args.grad_accumulation_steps == 0:
                 optimizer.zero_grad()
 
-            # Forward pass with contrastive learning during training
-            outputs = model(b_ids, b_mask)
-            if isinstance(outputs, tuple):
-                logits, contrastive_loss = outputs
-                # Combine classification and contrastive loss
-                cls_loss = criterion(logits, b_labels.view(-1))
-                loss = (cls_loss + 0.1 * contrastive_loss) / args.grad_accumulation_steps
-            else:
-                logits = outputs
-                loss = criterion(logits, b_labels.view(-1)) / args.grad_accumulation_steps
+            # Forward pass
+            logits = model(b_ids, b_mask)
+            loss = criterion(logits, b_labels.view(-1)) / args.grad_accumulation_steps
             
             # Backward pass
             loss.backward()
