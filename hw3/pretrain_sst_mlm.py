@@ -40,7 +40,7 @@ class MLMDataset(Dataset):
         # Probability of masking each token
         probability_matrix = torch.full(labels.shape, self.mask_prob)
         
-        # Don't mask special tokens - FIX: Call get_special_tokens_mask on entire sequence
+        # Don't mask special tokens
         special_tokens_mask = self.tokenizer.get_special_tokens_mask(
             labels.tolist(), 
             already_has_special_tokens=True
@@ -146,15 +146,20 @@ def pretrain_mlm(args):
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             
-            # Forward pass through BERT
+            # 🔥 FIX: Don't use output_hidden_states (not supported in custom BERT)
+            # Just get the output directly
             outputs = model(
                 input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True
+                attention_mask=attention_mask
             )
             
             # Get hidden states [batch_size, seq_len, hidden_size]
-            hidden_states = outputs[0]
+            # outputs is a dict with 'last_hidden_state' and 'pooler_output'
+            if isinstance(outputs, dict):
+                hidden_states = outputs['last_hidden_state']
+            else:
+                # If it's a tuple/list, first element is last_hidden_state
+                hidden_states = outputs[0]
             
             # Simple MLM head: project to vocab
             # For proper BERT, you'd use the original MLM head
@@ -182,14 +187,18 @@ def pretrain_mlm(args):
             
             total_loss += loss.item()
             num_batches += 1
+            
+            # Clear GPU cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         avg_loss = total_loss / num_batches
-        print(f"Epoch {epoch}: MLM Loss = {avg_loss:.4f}\n")
+        print(f"\nEpoch {epoch}: MLM Loss = {avg_loss:.4f}\n")
     
     # Save pre-trained model
     print(f"\nSaving pre-trained model to {args.output_model}...")
     torch.save(model.state_dict(), args.output_model)
-    print("✅ Done!")
+    print("✅ Pre-training complete!")
 
 def get_args():
     parser = argparse.ArgumentParser()
