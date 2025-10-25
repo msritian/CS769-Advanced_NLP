@@ -47,12 +47,15 @@ class BertSentClassifier(torch.nn.Module):
         self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
         self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
-        # Enhanced classifier architecture
+        # Enhanced classifier architecture with stronger regularization
         hidden_size = config.hidden_size * 3  # CLS + weighted_pool + avg_pool
-        self.dense = torch.nn.Linear(hidden_size, config.hidden_size)
-        self.batch_norm = torch.nn.BatchNorm1d(config.hidden_size)
+        self.dense1 = torch.nn.Linear(hidden_size, config.hidden_size * 2)
+        self.dense2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
+        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
+        self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
         self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
         self.activation = torch.nn.GELU()
+        self.dropout_high = torch.nn.Dropout(0.5)  # Higher dropout for first layer
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, input_ids, attention_mask):
@@ -86,10 +89,18 @@ class BertSentClassifier(torch.nn.Module):
         # Concatenate all representations
         combined = torch.cat([cls_output, weighted_output, mean_output], dim=-1)
         
-        # Apply dropouts and transformations
+        # Multi-layer transformation with stronger regularization
         combined = self.dropout1(combined)
-        hidden = self.dense(combined)
-        hidden = self.batch_norm(hidden)
+        
+        # First layer with higher dropout
+        hidden = self.dense1(combined)
+        hidden = self.batch_norm1(hidden)
+        hidden = self.activation(hidden)
+        hidden = self.dropout_high(hidden)
+        
+        # Second layer
+        hidden = self.dense2(hidden)
+        hidden = self.batch_norm2(hidden)
         hidden = self.activation(hidden)
         hidden = self.layer_norm(hidden)
         hidden = self.dropout2(hidden)
