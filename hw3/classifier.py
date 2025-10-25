@@ -792,6 +792,8 @@
 #     train(args)
 #     test(args)
 
+
+###### NEW
 import time, random, numpy as np, argparse, sys, re, os, math
 from types import SimpleNamespace
 
@@ -822,11 +824,11 @@ def seed_everything(seed=11711):
 # ============= CLASSIFIER MODEL =============
 class BertSentClassifier(torch.nn.Module):
     """
-    Enhanced BERT Sentence Classifier with:
-    - Multi-head attention pooling
-    - Advanced regularization (label smoothing, dropout)
-    - Gradual unfreezing support
-    - Discriminative learning rates
+    Optimized BERT Sentence Classifier with:
+    - Attention pooling (simple, effective)
+    - Proper dropout scheduling
+    - Minimal complexity for stability
+    - Support for loading pre-trained MLM weights
     """
     
     def __init__(self, config):
@@ -845,32 +847,29 @@ class BertSentClassifier(torch.nn.Module):
 
         hidden_size = 768
         
-        # ========== Multi-Head Attention Pooling ==========
-        # This provides richer representations than just CLS token
-        self.attention_heads = nn.ModuleList([
-            nn.Linear(hidden_size, 1) for _ in range(4)
-        ])
+        # ========== Attention Pooling (Single Head) ==========
+        # Simple but effective: learn to weight tokens
+        self.attention = nn.Linear(hidden_size, 1)
         
         # ========== Feature Combination ==========
-        # Combine: CLS + 4 attention heads + mean pooling + max pooling
-        # Total: hidden_size * 7
-        combined_size = hidden_size * 7
+        # Combine: CLS token + attention-weighted pooling
+        # Simple is better! Don't over-complicate
+        combined_size = hidden_size * 2
         
-        self.dense1 = nn.Linear(combined_size, hidden_size * 2)
-        self.dense2 = nn.Linear(hidden_size * 2, hidden_size)
+        self.dense1 = nn.Linear(combined_size, hidden_size)
+        self.dense2 = nn.Linear(hidden_size, hidden_size // 2)
         
         # ========== Normalization ==========
-        self.layer_norm1 = nn.LayerNorm(hidden_size * 2)
-        self.layer_norm2 = nn.LayerNorm(hidden_size)
-        self.batch_norm = nn.BatchNorm1d(hidden_size)
+        self.layer_norm1 = nn.LayerNorm(hidden_size)
+        self.layer_norm2 = nn.LayerNorm(hidden_size // 2)
         
         # ========== Regularization ==========
-        self.dropout1 = nn.Dropout(0.3)
-        self.dropout2 = nn.Dropout(0.2)
-        self.dropout3 = nn.Dropout(0.1)
+        # Progressive dropout: higher early, lower late
+        self.dropout1 = nn.Dropout(0.2)
+        self.dropout2 = nn.Dropout(0.1)
         
         # ========== Classification Head ==========
-        self.classifier = nn.Linear(hidden_size, self.num_labels)
+        self.classifier = nn.Linear(hidden_size // 2, self.num_labels)
         
         # ========== Activation ==========
         self.gelu = nn.GELU()
@@ -896,7 +895,7 @@ class BertSentClassifier(torch.nn.Module):
 
     def forward(self, input_ids, attention_mask):
         """
-        Clean forward pass with multiple pooling strategies
+        Clean forward pass with attention pooling
         """
         # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
@@ -912,48 +911,36 @@ class BertSentClassifier(torch.nn.Module):
         # ========== 1. CLS Token Representation ==========
         cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
         
-        # ========== 2. Multi-Head Attention Pooling ==========
-        attention_outputs = []
-        for attn_layer in self.attention_heads:
-            # Calculate attention weights
-            attn_logits = attn_layer(hidden_states).squeeze(-1)  # [batch_size, seq_len]
-            
-            # Mask padding tokens
-            attn_logits = attn_logits.masked_fill(attention_mask == 0, -1e9)
-            attn_weights = F.softmax(attn_logits, dim=-1)  # [batch_size, seq_len]
-            
-            # Weighted average of hidden states
-            context = torch.bmm(attn_weights.unsqueeze(1), hidden_states).squeeze(1)
-            attention_outputs.append(context)
+        # ========== 2. Attention Pooling ==========
+        # Learn to weight which tokens are important
+        attn_logits = self.attention(hidden_states).squeeze(-1)  # [batch_size, seq_len]
         
-        # ========== 3. Mean Pooling ==========
-        mask_expanded = attention_mask.unsqueeze(-1).float()  # [batch_size, seq_len, 1]
-        mean_output = (hidden_states * mask_expanded).sum(1) / mask_expanded.sum(1)  # [batch_size, hidden_size]
+        # Mask padding tokens (set to very negative so softmax → 0)
+        attn_logits = attn_logits.masked_fill(attention_mask == 0, -1e9)
+        attn_weights = F.softmax(attn_logits, dim=-1)  # [batch_size, seq_len]
         
-        # ========== 4. Max Pooling ==========
-        hidden_states_masked = hidden_states.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
-        max_output = torch.max(hidden_states_masked, dim=1)[0]  # [batch_size, hidden_size]
+        # Weighted average of hidden states
+        weighted_output = torch.bmm(attn_weights.unsqueeze(1), hidden_states).squeeze(1)
+        # [batch_size, hidden_size]
         
-        # ========== 5. Combine All Representations ==========
-        combined = torch.cat([cls_output] + attention_outputs + [mean_output, max_output], dim=1)
-        # Shape: [batch_size, hidden_size * 7]
+        # ========== 3. Combine Representations ==========
+        combined = torch.cat([cls_output, weighted_output], dim=1)  
+        # [batch_size, hidden_size * 2]
         
-        # ========== 6. Dense Layers with Normalization & Dropout ==========
-        hidden = self.dense1(combined)  # [batch_size, hidden_size * 2]
+        # ========== 4. Dense Layers with Normalization & Dropout ==========
+        hidden = self.dense1(combined)  # [batch_size, hidden_size]
         hidden = self.layer_norm1(hidden)
         hidden = self.gelu(hidden)
         hidden = self.dropout1(hidden)
         
         # Second dense layer
-        hidden = self.dense2(hidden)  # [batch_size, hidden_size]
+        hidden = self.dense2(hidden)  # [batch_size, hidden_size // 2]
         hidden = self.layer_norm2(hidden)
-        hidden = self.batch_norm(hidden)
         hidden = self.gelu(hidden)
         hidden = self.dropout2(hidden)
         
-        # ========== 7. Classification ==========
+        # ========== 5. Classification ==========
         logits = self.classifier(hidden)
-        hidden = self.dropout3(hidden)
         
         return F.log_softmax(logits, dim=-1)
 
@@ -1078,11 +1065,11 @@ def save_model(model, optimizer, args, config, filepath):
     }
 
     torch.save(save_info, filepath)
-    print(f"save the model to {filepath}")
+    print(f"💾 Saved model to {filepath}")
 
 # ============= TRAINING =============
 def train(args):
-    """Main training function with advanced techniques"""
+    """Main training function"""
     # ========== Device Setup ==========
     if args.use_gpu and torch.cuda.is_available():
         device = torch.device('cuda')
@@ -1126,16 +1113,44 @@ def train(args):
 
     config = SimpleNamespace(**config)
     model = BertSentClassifier(config)
+    
+    # 🔥 NEW: Load pre-trained MLM weights if provided
+    if args.pretrained_model and os.path.exists(args.pretrained_model):
+        print(f"\n📦 Loading pre-trained MLM model from: {args.pretrained_model}")
+        try:
+            pretrained_state_dict = torch.load(args.pretrained_model, map_location='cpu')
+            
+            # Get current model state dict
+            model_state_dict = model.state_dict()
+            
+            # Filter: only load BERT weights (not classifier head)
+            pretrained_bert_dict = {}
+            for k, v in pretrained_state_dict.items():
+                if k in model_state_dict and k.startswith('bert.'):
+                    pretrained_bert_dict[k] = v
+            
+            # Update model with pretrained weights
+            model_state_dict.update(pretrained_bert_dict)
+            model.load_state_dict(model_state_dict)
+            
+            print(f"✅ Successfully loaded {len(pretrained_bert_dict)} BERT parameters from pre-training")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not load pre-trained model: {e}")
+            print(f"   Continuing with randomly initialized BERT...")
+    else:
+        if args.pretrained_model:
+            print(f"⚠️  Pre-trained model path not found: {args.pretrained_model}")
+        print("ℹ️  Using randomly initialized BERT (no pre-training)")
+    
     model = model.to(device)
 
-    # ========== Setup Optimizer with Discriminative Learning Rates ==========
+    # ========== Setup Optimizer ==========
     lr = args.lr
     optimizer_grouped_parameters = []
     
     if args.discriminative_lr:
-        # BERT layers: lower LR for earlier layers (more general knowledge)
+        # BERT layers: lower LR for earlier layers
         for i, layer in enumerate(model.bert.bert_layers):
-            # Discriminative LR: multiply by 0.95^(12-i-1)
             layer_lr = lr * (0.95 ** (model.total_layers - i - 1))
             optimizer_grouped_parameters.append({
                 'params': layer.parameters(),
@@ -1150,7 +1165,7 @@ def train(args):
             'lr': lr * 0.5
         })
         
-        # Classification head: highest LR (task-specific)
+        # Classification head: highest LR
         head_params = [p for n, p in model.named_parameters() if not n.startswith('bert.')]
         if head_params:
             optimizer_grouped_parameters.append({
@@ -1159,7 +1174,7 @@ def train(args):
                 'lr': lr
             })
     else:
-        # Standard weight decay: decay for all except bias and LayerNorm
+        # Standard weight decay
         decay_params = [p for n, p in model.named_parameters() 
                        if not any(nd in n for nd in ['bias', 'LayerNorm.weight'])]
         no_decay_params = [p for n, p in model.named_parameters() 
@@ -1185,20 +1200,16 @@ def train(args):
     num_training_steps = len(train_dataloader) * args.epochs
     num_warmup_steps = int(num_training_steps * args.warmup_ratio)
     
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, 
-        max_lr=lr,
-        total_steps=num_training_steps,
-        pct_start=args.warmup_ratio,
-        anneal_strategy='linear',
-        final_div_factor=100
+    scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.1,
+        total_iters=num_warmup_steps
     )
 
-    # ========== Loss Function with Label Smoothing ==========
+    # ========== Loss Function ==========
     try:
         criterion = nn.CrossEntropyLoss(reduction='mean', label_smoothing=0.1)
     except TypeError:
-        # Fallback for older PyTorch versions
         criterion = nn.CrossEntropyLoss(reduction='mean')
 
     # ========== Training State ==========
@@ -1214,11 +1225,13 @@ def train(args):
     print(f"  Batch Size: {args.batch_size}")
     print(f"  Discriminative LR: {args.discriminative_lr}")
     print(f"  Gradual Unfreeze: {args.gradual_unfreeze}")
+    print(f"  Num Training Steps: {num_training_steps}")
+    print(f"  Num Warmup Steps: {num_warmup_steps}")
     print(f"{'='*80}\n")
 
     # ========== Main Training Loop ==========
     for epoch in range(args.epochs):
-        # Gradual unfreezing: unfreeze one layer every 2 epochs
+        # Gradual unfreezing
         if args.gradual_unfreeze and epoch > 0 and epoch % 2 == 0:
             if model.unfreeze_next_layer():
                 print(f"🔓 Unfroze BERT layer {model.current_unfrozen_layer}")
@@ -1235,24 +1248,16 @@ def train(args):
             b_mask = batch[0]['attention_mask'].to(device)
             b_labels = batch[0]['labels'].to(device)
 
-            # Gradient accumulation
-            if step % args.grad_accumulation_steps == 0:
-                optimizer.zero_grad()
-
             # Forward pass
             logits = model(b_ids, b_mask)
             loss = criterion(logits, b_labels)
 
             # Backward pass
-            loss = loss / args.grad_accumulation_steps
+            optimizer.zero_grad()
             loss.backward()
-
-            # Update weights after accumulation
-            if (step + 1) % args.grad_accumulation_steps == 0:
-                # Gradient clipping for stability
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                scheduler.step()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
 
             train_loss += loss.item()
             num_batches += 1
@@ -1268,27 +1273,26 @@ def train(args):
 
         print(f"Epoch {epoch} | Loss: {avg_train_loss:.4f} | Train Acc: {train_acc:.4f} | Dev Acc: {dev_acc:.4f} | Dev F1: {dev_f1:.4f}")
 
-        # Save best model and keep track for averaging
+        # Save best model
         if dev_acc > best_dev_acc:
             best_dev_acc = dev_acc
             patience_counter = 0
             save_model(model, optimizer, args, config, args.filepath)
             
-            # Keep best model states for averaging
             best_model_states.append(model.state_dict())
             if len(best_model_states) > 5:
                 best_model_states.pop(0)
             
-            print(f"✅ New best! Saved model.")
+            print(f"✅ New best! Dev Acc: {dev_acc:.4f}")
         else:
             patience_counter += 1
             if patience_counter >= args.patience:
-                print(f"\n⏱️  Early stopping at epoch {epoch} (patience: {args.patience})")
+                print(f"\n⏱️  Early stopping at epoch {epoch}")
                 break
 
     # ========== Model Checkpoint Averaging ==========
     if len(best_model_states) > 1:
-        print(f"\n📊 Averaging {len(best_model_states)} best model checkpoints...")
+        print(f"\n📊 Averaging {len(best_model_states)} best checkpoints...")
         avg_state = {}
         for key in best_model_states[0].keys():
             try:
@@ -1365,34 +1369,27 @@ def get_args():
     parser.add_argument("--dev_out", type=str, default="sst-dev-output.txt")
     parser.add_argument("--test_out", type=str, default="sst-test-output.txt")
     parser.add_argument("--filepath", type=str, default=None)
+    parser.add_argument("--pretrained_model", type=str, default=None,
+                        help="Path to pre-trained MLM model checkpoint")
 
     # Training arguments
     parser.add_argument("--option", type=str,
                         choices=('pretrain', 'finetune'), 
-                        default="finetune",
-                        help='pretrain: freeze BERT; finetune: update BERT')
+                        default="finetune")
     parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--use_gpu", action='store_true')
-    parser.add_argument("--gradual_unfreeze", action='store_true',
-                        help='Enable gradual unfreezing of BERT layers')
-    parser.add_argument("--discriminative_lr", action='store_true',
-                        help='Enable discriminative learning rates')
-    parser.add_argument("--patience", type=int, default=3,
+    parser.add_argument("--gradual_unfreeze", action='store_true')
+    parser.add_argument("--discriminative_lr", action='store_true')
+    parser.add_argument("--patience", type=int, default=4,
                         help='Early stopping patience')
     
     # Optimization arguments
-    parser.add_argument("--lr", type=float, default=2e-5,
-                        help='Initial learning rate')
-    parser.add_argument("--batch_size", type=int, default=8,
-                        help='Batch size')
+    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.1)
-    parser.add_argument("--warmup_ratio", type=float, default=0.1,
-                        help='Warmup ratio for scheduler')
-    parser.add_argument("--grad_accumulation_steps", type=int, default=2,
-                        help='Gradient accumulation steps')
-    parser.add_argument("--max_length", type=int, default=256,
-                        help='Maximum sequence length')
+    parser.add_argument("--warmup_ratio", type=float, default=0.06)
+    parser.add_argument("--max_length", type=int, default=256)
 
     args = parser.parse_args()
     print(f"args: {vars(args)}")
