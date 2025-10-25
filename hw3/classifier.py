@@ -58,8 +58,9 @@ class BertSentClassifier(torch.nn.Module):
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        hidden_states = outputs[0]  # [batch_size, seq_len, hidden_size]
-        pooled_output = outputs[1] if len(outputs) > 1 else hidden_states[:, 0]
+        # The BERT model returns hidden states directly
+        hidden_states = outputs.last_hidden_state  # [batch_size, seq_len, hidden_size]
+        pooled_output = outputs.pooler_output if hasattr(outputs, 'pooler_output') else hidden_states[:, 0]
 
         # 1. CLS token representation
         cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
