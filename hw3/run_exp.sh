@@ -13,41 +13,73 @@
 #     --weight_decay 0.05 \
 #     --seed 42
 
-# 2. Run experiments on CFIMDB
+# 2.2 Fine-tune on CFIMDB with advanced techniques
 PREF='cfimdb'
 python classifier.py \
     --use_gpu \
     --option finetune \
-    --lr 1e-5 \
-    --hidden_dropout_prob 0.2 \
-    --epochs 6 \
-    --batch_size 8 \
-    --grad_accumulation_steps 4 \
-    --warmup_ratio 0.1 \
-    --max_length 512 \
-    --weight_decay 0.02 \
-    --seed 42
+    --lr 2e-5 \
+    --hidden_dropout_prob 0.1 \
+    --epochs 4 \
+    --batch_size 16 \
+    --grad_accumulation_steps 2 \
+    --warmup_ratio 0.06 \
+    --max_length 256 \
+    --weight_decay 0.01 \
+    --seed 42 \
+    --use_vat \
+    --gradual_unfreeze
 CAMPUSID='9088915203'
 mkdir -p $CAMPUSID
 
-# Step 1. (Optional) Any preprocessing step, e.g., downloading pre-trained word embeddings
+# Step 1: Domain adaptation through continued pre-training
+# First on SST
+PREF='sst'
+python classifier.py \
+    --use_gpu \
+    --option pretrain \
+    --lr 1e-4 \
+    --hidden_dropout_prob 0.1 \
+    --epochs 3 \
+    --batch_size 32 \
+    --grad_accumulation_steps 1 \
+    --warmup_ratio 0.1 \
+    --max_length 128 \
+    --weight_decay 0.01 \
+    --seed 42
 
+# Then on CFIMDB for domain adaptation
+PREF='cfimdb'
+python classifier.py \
+    --use_gpu \
+    --option pretrain \
+    --lr 1e-4 \
+    --hidden_dropout_prob 0.1 \
+    --epochs 3 \
+    --batch_size 16 \
+    --grad_accumulation_steps 2 \
+    --warmup_ratio 0.1 \
+    --max_length 256 \
+    --weight_decay 0.01 \
+    --seed 42
 
-# Step 2. Train models on two datasets.
-##  2.1. Run experiments on SST
+# Step 2: Enhanced fine-tuning with gradual unfreezing
+## 2.1 Fine-tune on SST
 PREF='sst'
 python classifier.py \
     --use_gpu \
     --option finetune \
     --lr 2e-5 \
-    --hidden_dropout_prob 0.15 \
+    --hidden_dropout_prob 0.1 \
     --epochs 5 \
-    --batch_size 24 \
-    --grad_accumulation_steps 2 \
+    --batch_size 32 \
+    --grad_accumulation_steps 1 \
     --warmup_ratio 0.1 \
     --max_length 128 \
-    --weight_decay 0.05 \
+    --weight_decay 0.01 \
     --seed 42 \
+    --use_vat \
+    --gradual_unfreeze \
     --train "data/${PREF}-train.txt" \
     --dev "data/${PREF}-dev.txt" \
     --test "data/${PREF}-test.txt" \

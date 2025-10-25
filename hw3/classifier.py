@@ -165,84 +165,172 @@ class BertSentClassifier(torch.nn.Module):
         self.num_labels = config.num_labels
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.config = config
-
-        # Set up parameters based on mode
+        
+        # Get total BERT layers for gradual unfreezing
+        self.bert_layers = [self.bert.embeddings] + list(self.bert.encoder.layer)
+        self.total_layers = len(self.bert_layers)
+        self.current_unfrozen_layer = self.total_layers - 1  # Start with last layer
+        
+        # Set up parameters based on mode with discriminative fine-tuning
         if config.option == 'pretrain':
             for param in self.bert.parameters():
                 param.requires_grad = False
         elif config.option == 'finetune':
+            # Initially freeze all layers
             for param in self.bert.parameters():
-                param.requires_grad = True
+                param.requires_grad = False
+            # Unfreeze last layer to start
+            self._unfreeze_bert_layer(self.current_unfrozen_layer)
 
-        # Simple but effective attention mechanism
+        # Advanced attention with multi-scale features
         self.attention = torch.nn.Linear(config.hidden_size, 1)
+        self.scale_attention = torch.nn.Linear(config.hidden_size, 1)
         
-        # Two-stage classifier with proper dimensionality
-        hidden_size = config.hidden_size
-        self.dropout1 = torch.nn.Dropout(0.1)
-        self.dropout2 = torch.nn.Dropout(0.1)
+        # Multi-scale feature combination
+        self.dense = torch.nn.Linear(config.hidden_size * 3, config.hidden_size)
+        self.intermediate = torch.nn.Linear(config.hidden_size, config.hidden_size)
         
-        # First stage - maintain dimensionality
-        self.dense = torch.nn.Linear(hidden_size * 2, hidden_size)
-        self.layer_norm = torch.nn.LayerNorm(hidden_size)
+        # Classification head with enhanced regularization
+        self.dropout = torch.nn.Dropout(0.1)
+        self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
         
-        # Output classifier
-        self.classifier = torch.nn.Linear(hidden_size, config.num_labels)
+        # Layer normalization and batch normalization for stability
+        self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
+        self.batch_norm = torch.nn.BatchNorm1d(config.hidden_size)
         
-        # Activation
+        # Advanced activation functions
         self.gelu = torch.nn.GELU()
+        self.mish = lambda x: x * torch.tanh(F.softplus(x))
+        
+        # Virtual adversarial training parameters
+        self.vat_eps = 1e-6
+        self.vat_xi = 1e-6
+        
+    def _unfreeze_bert_layer(self, layer_idx):
+        """Unfreeze a specific BERT layer with discriminative learning rates"""
+        if 0 <= layer_idx < self.total_layers:
+            layer = self.bert_layers[layer_idx]
+            for param in layer.parameters():
+                param.requires_grad = True
+            
+            # Apply discriminative learning rates (lower for earlier layers)
+            base_lr = self.config.lr
+            layer_lr = base_lr * (0.95 ** (self.total_layers - layer_idx - 1))
+            
+            # Store layer-specific learning rate for optimizer
+            for param in layer.parameters():
+                param.layer_lr = layer_lr
+    
+    def unfreeze_next_layer(self):
+        """Unfreeze the next layer in the gradual unfreezing process"""
+        if self.current_unfrozen_layer > 0:
+            self.current_unfrozen_layer -= 1
+            self._unfreeze_bert_layer(self.current_unfrozen_layer)
+            return True
+        return False
+        
+    def compute_vat_perturbation(self, hidden_states, attention_mask):
+        """Compute virtual adversarial perturbation"""
+        d = torch.randn_like(hidden_states)
+        d = F.normalize(d, dim=-1) * self.vat_xi
+        d.requires_grad_()
+        
+        with torch.enable_grad():
+            logits_ori = self.forward_from_hidden(hidden_states, attention_mask)
+            logits_pert = self.forward_from_hidden(hidden_states + d, attention_mask)
+            kl_loss = F.kl_div(F.log_softmax(logits_pert, dim=1),
+                              F.softmax(logits_ori, dim=1),
+                              reduction='batchmean')
+            grad = torch.autograd.grad(kl_loss, d)[0]
+            
+        r_vadv = F.normalize(grad, dim=-1) * self.vat_eps
+        return r_vadv
 
-    def forward(self, input_ids, attention_mask):
-        # Get BERT outputs with gradient checkpointing for memory efficiency
+    def forward_from_hidden(self, hidden_states, attention_mask):
+        """Forward pass starting from hidden states (for VAT)"""
+        # Multi-scale attention mechanisms
+        attention_weights = self.attention(hidden_states)
+        attention_weights = attention_weights.squeeze(-1)
+        attention_weights = attention_weights.masked_fill(attention_mask == 0, -1e9)
+        attention_weights = F.softmax(attention_weights, dim=1)
+        context_vector = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)
+        
+        # Scale-aware attention
+        scale_weights = self.scale_attention(hidden_states)
+        scale_weights = scale_weights.squeeze(-1)
+        scale_weights = scale_weights.masked_fill(attention_mask == 0, -1e9)
+        scale_weights = F.softmax(scale_weights, dim=1)
+        scale_context = torch.bmm(scale_weights.unsqueeze(1), hidden_states).squeeze(1)
+        
+        # Get CLS and combine all features
+        cls_output = hidden_states[:, 0]
+        combined = torch.cat([cls_output, context_vector, scale_context], dim=1)
+        
+        # Multi-layer feature processing
+        hidden = self.dense(combined)
+        hidden = self.mish(hidden)
+        hidden = self.layer_norm(hidden)
+        hidden = self.dropout(hidden)
+        
+        # Intermediate processing
+        hidden = self.intermediate(hidden)
+        hidden = self.mish(hidden)
+        hidden = self.batch_norm(hidden)
+        hidden = self.dropout(hidden)
+        
+        # Classification
+        logits = self.classifier(hidden)
+        return logits
+    
+    def forward(self, input_ids, attention_mask, training=True):
+        # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        # Handle different output formats (dict or tuple)
+        
+        # Handle different output formats
         if isinstance(outputs, dict):
             hidden_states = outputs['last_hidden_state']
         else:
-            hidden_states = outputs[0]  # [batch_size, seq_len, hidden_size]
+            hidden_states = outputs[0]
         
-        # Multi-head attention processing
-        attention_outputs = []
-        for attention_layer in self.attention:
-            # Calculate attention weights for each head
-            attn = attention_layer(hidden_states)  # [batch_size, seq_len, 1]
-            attn_weights = torch.tanh(attn).squeeze(-1)  # [batch_size, seq_len]
-            attn_weights = attn_weights * attention_mask  # Apply mask
-            attn_weights = F.softmax(attn_weights, dim=1)  # Normalize
-            
-            # Get attention-weighted representation
-            attn_output = torch.bmm(attn_weights.unsqueeze(1), hidden_states).squeeze(1)
-            attention_outputs.append(attn_output)
+        # Apply virtual adversarial training during training
+        if training:
+            r_vadv = self.compute_vat_perturbation(hidden_states, attention_mask)
+            hidden_states = hidden_states + r_vadv
         
-        # Get CLS token representation and mean pooling
+        # Get logits through forward pass
+        logits = self.forward_from_hidden(hidden_states, attention_mask)
+        return F.log_softmax(logits, dim=-1)
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
+        
+        # 1. CLS token representation
         cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
-        mean_output = (hidden_states * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1).clamp(min=1e-9)
         
-        # Concatenate all features
-        attention_concat = torch.cat(attention_outputs, dim=-1)  # Combine all attention heads
-        combined = torch.cat([cls_output, mean_output, attention_concat], dim=-1)
+        # 2. Attention weighted representation
+        attention_weights = torch.tanh(self.attention(hidden_states))  # [batch_size, seq_len, 1]
+        attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
+        attention_weights = F.softmax(attention_weights, dim=1)
+        weighted_output = torch.bmm(attention_weights.transpose(1, 2), hidden_states).squeeze(1)  # [batch_size, hidden_size]
         
-        # Feature fusion with skip connection
-        fused = self.feature_fusion(combined)  # [batch_size, hidden_size * 2]
-        fused = self.feature_dropout(fused)
-        fused = self.layer_norm1(fused)
+        # 3. Combine representations
+        combined = torch.cat([cls_output, weighted_output], dim=1)  # [batch_size, hidden_size*2]
         
-        # First classification stage with residual connection
-        hidden = self.classifier1(fused)  # [batch_size, hidden_size * 2]
-        hidden = self.mish(hidden)
-        hidden = self.batch_norm1(hidden.contiguous())  # Fixed contiguous tensor for batch norm
-        hidden = self.dropout1(hidden)
-        hidden = hidden + fused  # Residual connection [batch_size, hidden_size * 2]
+        # 4. First classification stage
+        hidden = self.dropout1(combined)
+        hidden = self.classifier1(hidden)
+        hidden = self.layer_norm1(hidden)
+        hidden = self.batch_norm1(hidden)
+        hidden = self.gelu(hidden)
         
-        # Second classification stage
-        hidden = self.classifier2(hidden)  # [batch_size, hidden_size]
-        hidden = self.mish(hidden)
-        hidden = self.layer_norm2(hidden)
-        hidden = self.batch_norm2(hidden.contiguous())  # Fixed contiguous tensor for batch norm
+        # 5. Second classification stage
         hidden = self.dropout2(hidden)
+        hidden = self.classifier2(hidden)
+        hidden = self.layer_norm2(hidden)
+        hidden = self.batch_norm2(hidden)
+        hidden = self.gelu(hidden)
         
-        # Final classification
-        logits = self.classifier_out(hidden)  # [batch_size, num_labels]
+        # 6. Output layer
+        logits = self.classifier_out(hidden)
         
         return F.log_softmax(logits, dim=-1)
 
