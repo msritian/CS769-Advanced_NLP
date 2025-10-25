@@ -69,7 +69,7 @@ python classifier.py \
     --lr 2e-5 \
     --hidden_dropout_prob 0.2 \
     --epochs 5 \
-    --batch_size 32 \
+    --batch_size 4 \
     --grad_accumulation_steps 1 \
     --warmup_ratio 0.1 \
     --max_length 128 \
@@ -85,10 +85,10 @@ python classifier.py \
     --lr 2e-5 \
     --hidden_dropout_prob 0.2 \
     --epochs 5 \
-    --batch_size 16 \
+    --batch_size 4 \
     --grad_accumulation_steps 2 \
     --warmup_ratio 0.1 \
-    --max_length 256 \
+    --max_length 128 \
     --weight_decay 0.05 \
     --seed 42 \
     --gradual_unfreeze \
