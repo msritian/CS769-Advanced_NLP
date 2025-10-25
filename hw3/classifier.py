@@ -230,32 +230,26 @@ def train(args):
     ## specify the optimizer with layer-wise learning rate decay
     # Group parameters by layers for different learning rates
     no_decay = ['bias', 'LayerNorm.weight']
-    # Start with embeddings and classifier
-    layers = [model.bert.embeddings] + [model.classifier]
-    # Add encoder layers if available
-    if hasattr(model.bert, 'encoder') and hasattr(model.bert.encoder, 'layer'):
-        layers = [model.bert.embeddings] + list(model.bert.encoder.layer) + [model.classifier]
-    layers.reverse()  # Higher layers first
+    
+    # Create parameter groups with different learning rates
+    optimizer_grouped_parameters = [
+        {
+            'params': [p for n, p in model.named_parameters() 
+                      if not any(nd in n for nd in no_decay)],
+            'weight_decay': 0.01,
+            'lr': lr
+        },
+        {
+            'params': [p for n, p in model.named_parameters() 
+                      if any(nd in n for nd in no_decay)],
+            'weight_decay': 0.0,
+            'lr': lr
+        }
+    ]
     
     # Create optimizer groups with different learning rates
     optimizer_grouped_parameters = []
-    for i, layer in enumerate(layers):
-        # Learning rate decreases as we go deeper into the network
-        lr_factor = 0.95 ** (len(layers) - i - 1)
-        optimizer_grouped_parameters.extend([
-            {
-                'params': [p for n, p in layer.named_parameters() 
-                          if not any(nd in n for nd in no_decay)],
-                'weight_decay': 0.01,
-                'lr': lr * lr_factor
-            },
-            {
-                'params': [p for n, p in layer.named_parameters() 
-                          if any(nd in n for nd in no_decay)],
-                'weight_decay': 0.0,
-                'lr': lr * lr_factor
-            }
-        ])
+
     
     optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
     best_dev_acc = 0
