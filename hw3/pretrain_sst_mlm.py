@@ -40,11 +40,11 @@ class MLMDataset(Dataset):
         # Probability of masking each token
         probability_matrix = torch.full(labels.shape, self.mask_prob)
         
-        # Don't mask special tokens
-        special_tokens_mask = [
-            self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True)
-            for val in labels.tolist()
-        ]
+        # Don't mask special tokens - FIX: Call get_special_tokens_mask on entire sequence
+        special_tokens_mask = self.tokenizer.get_special_tokens_mask(
+            labels.tolist(), 
+            already_has_special_tokens=True
+        )
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
         
         # Decide which tokens to mask
