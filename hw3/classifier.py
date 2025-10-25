@@ -558,10 +558,10 @@ def train(args):
     lr = args.lr
     # Gradual unfreezing and discriminative learning rates
     if args.discriminative_lr:
-        # Assign different learning rates to each BERT layer
+        # Assign different learning rates to each BERT layer (custom model)
         optimizer_grouped_parameters = []
-        # BERT encoder layers
-        for i, layer in enumerate(model.bert.encoder.layer):
+        # BERT encoder layers (custom: bert_layers)
+        for i, layer in enumerate(model.bert.bert_layers):
             layer_lr = lr * (0.95 ** (model.total_layers - i - 1))
             optimizer_grouped_parameters.append({
                 'params': layer.parameters(),
@@ -570,7 +570,7 @@ def train(args):
             })
         # Embeddings
         optimizer_grouped_parameters.append({
-            'params': model.bert.embeddings.parameters(),
+            'params': model.bert.word_embedding.parameters(),
             'weight_decay': 0.01,
             'lr': lr * 0.5
         })
