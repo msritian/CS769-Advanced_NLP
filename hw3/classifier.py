@@ -117,8 +117,7 @@ class BertDataset(Dataset):
     def pad_data(self, data):
         sents = [x[0] for x in data]
         labels = [x[1] for x in data]
-        encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
-        # Truncate to max_length
+        # Use max_length from args
         encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True, max_length=self.p.max_length)
         token_ids = encoding['input_ids']
         attention_mask = encoding['attention_mask']
@@ -421,9 +420,9 @@ def get_args():
     parser.add_argument("--train", type=str, default="data/cfimdb-train.txt")
     parser.add_argument("--dev", type=str, default="data/cfimdb-dev.txt")
     parser.add_argument("--test", type=str, default="data/cfimdb-test.txt")
-    parser.add_argument("--dev_out", type=str, required=True)
-    parser.add_argument("--test_out", type=str, required=True)
-    parser.add_argument("--filepath", type=str, required=True)
+    parser.add_argument("--dev_out", type=str, default="cfimdb-dev-output.txt")
+    parser.add_argument("--test_out", type=str, default="cfimdb-test-output.txt")
+    parser.add_argument("--filepath", type=str, default=None)
 
     # Training arguments
     parser.add_argument("--option", type=str,
@@ -448,15 +447,6 @@ def get_args():
                         help='Weight decay coefficient')
     parser.add_argument("--max_length", type=int, default=256,
                         help='Maximum sequence length')
-    parser.add_argument("--dev_out", type=str, default="cfimdb-dev-output.txt")
-    parser.add_argument("--test_out", type=str, default="cfimdb-test-output.txt")
-    parser.add_argument("--filepath", type=str, default=None)
-
-    # hyper parameters
-    parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=8)
-    parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
-    parser.add_argument("--lr", type=float, help="learning rate, default lr for 'pretrain': 1e-3, 'finetune': 1e-5",
-                        default=1e-5)
 
     args = parser.parse_args()
     print(f"args: {vars(args)}")
