@@ -11,7 +11,7 @@ python classifier.py \
     --warmup_ratio 0.1 \
     --max_length 128 \
     --weight_decay 0.05 \
-    --seed 42 \to your campus ID
+    --seed 42
 CAMPUSID='9088915203'
 mkdir -p $CAMPUSID
 
