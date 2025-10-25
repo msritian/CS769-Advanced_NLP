@@ -47,15 +47,31 @@ class BertSentClassifier(torch.nn.Module):
         self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
         self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
-        # Enhanced classifier architecture with stronger regularization
+        # Enhanced architecture with residual connections and multi-head attention
         hidden_size = config.hidden_size * 3  # CLS + weighted_pool + avg_pool
-        self.dense1 = torch.nn.Linear(hidden_size, config.hidden_size * 2)
-        self.dense2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
-        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
+        
+        # Multi-head attention for better feature interaction
+        self.attention_heads = 4
+        self.attention_projection = torch.nn.Linear(hidden_size, hidden_size)
+        self.multi_head_attention = torch.nn.ModuleList([
+            torch.nn.Linear(hidden_size, config.hidden_size) 
+            for _ in range(self.attention_heads)
+        ])
+        
+        # Main classification layers
+        self.dense1 = torch.nn.Linear(hidden_size, config.hidden_size)
+        self.dense2 = torch.nn.Linear(config.hidden_size, config.hidden_size)
+        
+        # Normalization and regularization
+        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size)
         self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
         self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
+        
+        # Varied dropout rates
+        self.dropout1 = torch.nn.Dropout(0.2)
+        self.dropout2 = torch.nn.Dropout(0.3)
+        
         self.activation = torch.nn.GELU()
-        self.dropout_high = torch.nn.Dropout(0.5)  # Higher dropout for first layer
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, input_ids, attention_mask):
@@ -89,21 +105,35 @@ class BertSentClassifier(torch.nn.Module):
         # Concatenate all representations
         combined = torch.cat([cls_output, weighted_output, mean_output], dim=-1)
         
-        # Multi-layer transformation with stronger regularization
-        combined = self.dropout1(combined)
+        # Project for attention
+        projected = self.attention_projection(combined)
         
-        # First layer with higher dropout
-        hidden = self.dense1(combined)
+        # Multi-head attention processing
+        attention_outputs = []
+        for head in self.multi_head_attention:
+            head_output = head(projected)
+            attention_outputs.append(head_output)
+        
+        # Combine attention heads
+        multi_head_output = torch.mean(torch.stack(attention_outputs), dim=0)
+        
+        # First transformation with residual
+        hidden = self.dense1(multi_head_output)
         hidden = self.batch_norm1(hidden)
         hidden = self.activation(hidden)
-        hidden = self.dropout_high(hidden)
+        hidden = self.dropout1(hidden)
+        hidden = hidden + multi_head_output[:, :self.config.hidden_size]  # Residual connection
         
-        # Second layer
+        # Second transformation with residual
+        residual = hidden
         hidden = self.dense2(hidden)
         hidden = self.batch_norm2(hidden)
         hidden = self.activation(hidden)
-        hidden = self.layer_norm(hidden)
         hidden = self.dropout2(hidden)
+        hidden = hidden + residual  # Residual connection
+        
+        # Final normalization
+        hidden = self.layer_norm(hidden)
         
         # Get logits
         logits = self.classifier(hidden)

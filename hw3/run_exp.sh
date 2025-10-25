@@ -12,13 +12,13 @@ python classifier.py \
     --use_gpu \
     --option finetune \
     --lr 2e-5 \
-    --hidden_dropout_prob 0.1 \
-    --epochs 6 \
-    --batch_size 32 \
-    --grad_accumulation_steps 1 \
+    --hidden_dropout_prob 0.15 \
+    --epochs 5 \
+    --batch_size 24 \
+    --grad_accumulation_steps 2 \
     --warmup_ratio 0.1 \
     --max_length 128 \
-    --weight_decay 0.01 \
+    --weight_decay 0.05 \
     --seed 42 \
     --train "data/${PREF}-train.txt" \
     --dev "data/${PREF}-dev.txt" \
