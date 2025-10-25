@@ -2,6 +2,7 @@ import time, random, numpy as np, argparse, sys, re, os
 from types import SimpleNamespace
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from sklearn.metrics import classification_report, f1_score, recall_score, accuracy_score
@@ -29,53 +30,86 @@ class BertSentClassifier(torch.nn.Module):
         super(BertSentClassifier, self).__init__()
         self.num_labels = config.num_labels
         self.bert = BertModel.from_pretrained('bert-base-uncased')
+        self.config = config
 
-        # pretrain mode does not require updating bert paramters.
-        for param in self.bert.parameters():
-            if config.option == 'pretrain':
+        # Set up discriminative fine-tuning
+        if config.option == 'pretrain':
+            for param in self.bert.parameters():
                 param.requires_grad = False
-            elif config.option == 'finetune':
-                param.requires_grad = True
+        elif config.option == 'finetune':
+            # Apply different learning rates to different layers
+            for i, layer in enumerate(self.bert.encoder.layer):
+                lr_scale = 0.95 ** (self.bert.config.num_hidden_layers - i - 1)
+                for param in layer.parameters():
+                    param.requires_grad = True
+                    param.lr_scale = lr_scale
 
-        # Improved architecture with additional layers
+        # Multi-head attention for weighted pooling
+        self.attention = torch.nn.Linear(config.hidden_size, 1)
+        
+        # Improved architecture
         self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
         self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
-        # Two-layer classifier with batch normalization
-        # Note: We use 2*hidden_size because we concatenate [CLS] and avg pooled
-        self.dense = torch.nn.Linear(2*config.hidden_size, config.hidden_size)
+        # Enhanced classifier architecture
+        hidden_size = config.hidden_size * 3  # CLS + weighted_pool + avg_pool
+        self.dense = torch.nn.Linear(hidden_size, config.hidden_size)
         self.batch_norm = torch.nn.BatchNorm1d(config.hidden_size)
+        self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
         self.activation = torch.nn.GELU()
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
+        
+        # Temperature parameter for contrastive learning
+        self.temp = nn.Parameter(torch.ones([]) * 0.07)
 
     def forward(self, input_ids, attention_mask):
-        # Get the BERT output with all hidden states
+        # Random token masking during fine-tuning (15% probability)
+        if self.training and self.config.option == 'finetune':
+            mask_prob = torch.full(input_ids.shape, 0.15)
+            mask = torch.bernoulli(mask_prob).bool()
+            mask = mask & attention_mask.bool()  # Only mask non-padding tokens
+            input_ids = input_ids.clone()
+            input_ids[mask] = 103  # [MASK] token id
+
+        # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        
-        # Get both the pooled output and last hidden state
-        pooled_output = outputs['pooler_output']  # [batch_size, hidden_size]
         last_hidden_state = outputs['last_hidden_state']  # [batch_size, seq_len, hidden_size]
+        cls_output = last_hidden_state[:, 0]  # [batch_size, hidden_size]
+
+        # Weighted attention pooling
+        attention_weights = self.attention(last_hidden_state)  # [batch_size, seq_len, 1]
+        attention_weights = torch.softmax(attention_weights, dim=1)
+        attention_weights = attention_weights * attention_mask.unsqueeze(-1)
+        attention_weights = attention_weights / (attention_weights.sum(dim=1, keepdim=True) + 1e-8)
+        weighted_output = (last_hidden_state * attention_weights).sum(dim=1)  # [batch_size, hidden_size]
+
+        # Average pooling
+        mask = attention_mask.unsqueeze(-1)  # [batch_size, seq_len, 1]
+        avg_output = (last_hidden_state * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
+
+        # Combine all representations
+        combined = torch.cat([cls_output, weighted_output, avg_output], dim=-1)
         
-        # Average pool the sequence representation (excluding [CLS] and [SEP])
-        # Create attention weights from attention_mask
-        seq_mask = attention_mask.unsqueeze(-1)  # [batch_size, seq_len, 1]
-        seq_masked = last_hidden_state * seq_mask  # [batch_size, seq_len, hidden_size]
-        seq_sum = seq_masked.sum(dim=1)  # [batch_size, hidden_size]
-        seq_len = seq_mask.sum(dim=1)  # [batch_size, 1]
-        avg_pooled = seq_sum / (seq_len + 1e-8)  # [batch_size, hidden_size]
-        
-        # Concatenate both representations
-        combined = torch.cat([pooled_output, avg_pooled], dim=-1)  # [batch_size, 2*hidden_size]
-        
-        # Improved forward pass with additional layers
+        # Enhanced forward pass
         combined = self.dropout1(combined)
         hidden = self.dense(combined)
         hidden = self.batch_norm(hidden)
         hidden = self.activation(hidden)
+        hidden = self.layer_norm(hidden)  # Extra normalization
         hidden = self.dropout2(hidden)
         
-        # Get logits through the classifier
+        # Get logits
         logits = self.classifier(hidden)
+
+        if self.training:
+            # Contrastive learning loss
+            normalized_hidden = F.normalize(hidden, dim=-1)
+            cosine_sim = torch.mm(normalized_hidden, normalized_hidden.t()) / self.temp
+            labels = torch.arange(cosine_sim.size(0)).to(cosine_sim.device)
+            contrastive_loss = F.cross_entropy(cosine_sim, labels)
+            
+            # Return both classification logits and contrastive loss
+            return logits, contrastive_loss
         
         return logits
 
@@ -97,9 +131,11 @@ class BertDataset(Dataset):
         sents = [x[0] for x in data]
         labels = [x[1] for x in data]
         encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
-        token_ids = torch.LongTensor(encoding['input_ids'])
-        attention_mask = torch.LongTensor(encoding['attention_mask'])
-        token_type_ids = torch.LongTensor(encoding['token_type_ids'])
+        # Truncate to max_length
+        encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True, max_length=self.p.max_length)
+        token_ids = encoding['input_ids']
+        attention_mask = encoding['attention_mask']
+        token_type_ids = encoding['token_type_ids']
         labels = torch.LongTensor(labels)
 
         return token_ids, token_type_ids, attention_mask, labels, sents
@@ -290,17 +326,34 @@ def train(args):
             b_mask = b_mask.to(device)
             b_labels = b_labels.to(device)
 
-            optimizer.zero_grad()
-            logits = model(b_ids, b_mask)
-            loss = criterion(logits, b_labels.view(-1)) / args.batch_size
+            # Clear gradients
+            if step % args.grad_accumulation_steps == 0:
+                optimizer.zero_grad()
 
+            # Forward pass with contrastive learning during training
+            outputs = model(b_ids, b_mask)
+            if isinstance(outputs, tuple):
+                logits, contrastive_loss = outputs
+                # Combine classification and contrastive loss
+                cls_loss = criterion(logits, b_labels.view(-1))
+                loss = (cls_loss + 0.1 * contrastive_loss) / args.grad_accumulation_steps
+            else:
+                logits = outputs
+                loss = criterion(logits, b_labels.view(-1)) / args.grad_accumulation_steps
+            
+            # Backward pass
             loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            
-            optimizer.step()
-            scheduler.step()
+
+            # Update weights after accumulating gradients
+            if (step + 1) % args.grad_accumulation_steps == 0:
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                scheduler.step()
+
+            # Free up memory
+            del logits
+            torch.cuda.empty_cache()
 
             train_loss += loss.item()
             num_batches += 1
@@ -386,6 +439,13 @@ def get_args():
                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
                         choices=('pretrain', 'finetune'), default="pretrain")
     parser.add_argument("--use_gpu", action='store_true')
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--max_length", type=int, default=512)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--warmup_ratio", type=float, default=0.06)
+    parser.add_argument("--grad_accumulation_steps", type=int, default=1)
+    parser.add_argument("--hidden_dropout_prob", type=float, default=0.1)
     parser.add_argument("--dev_out", type=str, default="cfimdb-dev-output.txt")
     parser.add_argument("--test_out", type=str, default="cfimdb-test-output.txt")
     parser.add_argument("--filepath", type=str, default=None)

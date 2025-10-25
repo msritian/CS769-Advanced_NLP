@@ -11,11 +11,15 @@ PREF='sst'
 python classifier.py \
     --use_gpu \
     --option finetune \
-    --lr 2e-5 \
-    --hidden_dropout_prob 0.2 \
-    --epochs 5 \
-    --batch_size 32 \
-    --seed 1234 \
+    --lr 5e-5 \
+    --hidden_dropout_prob 0.1 \
+    --epochs 10 \
+    --batch_size 16 \
+    --grad_accumulation_steps 2 \
+    --warmup_ratio 0.2 \
+    --max_length 64 \
+    --weight_decay 0.01 \
+    --seed 42 \
     --train "data/${PREF}-train.txt" \
     --dev "data/${PREF}-dev.txt" \
     --test "data/${PREF}-test.txt" \
@@ -28,8 +32,15 @@ PREF='cfimdb'
 python classifier.py \
     --use_gpu \
     --option finetune \
-    --lr 1e-5 \
-    --seed 1234 \
+    --lr 2e-5 \
+    --hidden_dropout_prob 0.1 \
+    --epochs 4 \
+    --batch_size 8 \
+    --grad_accumulation_steps 4 \
+    --warmup_ratio 0.06 \
+    --max_length 256 \
+    --weight_decay 0.01 \
+    --seed 42 \
     --train "data/${PREF}-train.txt" \
     --dev "data/${PREF}-dev.txt" \
     --test "data/${PREF}-test.txt" \
