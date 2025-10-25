@@ -165,25 +165,34 @@ class BertSentClassifier(torch.nn.Module):
         self.num_labels = config.num_labels
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.config = config
+
+        # Advanced attention with multi-scale features
+        self.attention = torch.nn.Linear(config.hidden_size, 1)
+        self.scale_attention = torch.nn.Linear(config.hidden_size, 1)
         
-        # Get BERT layers for gradual unfreezing
-        self.bert_encoder_layers = list(self.bert.modules())
-        self.total_layers = len([m for m in self.bert_encoder_layers if isinstance(m, nn.TransformerEncoderLayer)])
-        self.current_unfrozen_layer = -1  # Start with no layers unfrozen
+        # Multi-scale feature combination
+        self.dense = torch.nn.Linear(config.hidden_size * 3, config.hidden_size)
+        self.intermediate = torch.nn.Linear(config.hidden_size, config.hidden_size)
         
-        # Set up parameters based on mode with discriminative fine-tuning
+        # Classification head with enhanced regularization
+        self.dropout = torch.nn.Dropout(0.1)
+        self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
+        
+        # Layer normalization and batch normalization for stability
+        self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
+        self.batch_norm = torch.nn.BatchNorm1d(config.hidden_size)
+        
+        # Advanced activation functions
+        self.gelu = torch.nn.GELU()
+        self.mish = lambda x: x * torch.tanh(F.softplus(x))
+
+        # Set up parameters based on mode
         if config.option == 'pretrain':
             for param in self.bert.parameters():
                 param.requires_grad = False
         elif config.option == 'finetune':
-            # Initially freeze all layers
             for param in self.bert.parameters():
-                param.requires_grad = False
-            # Unfreeze classifier layers
-            for param in self.classifier.parameters():
-                param.requires_grad = True
-
-        # Advanced attention with multi-scale features
+                param.requires_grad = True        # Advanced attention with multi-scale features
         self.attention = torch.nn.Linear(config.hidden_size, 1)
         self.scale_attention = torch.nn.Linear(config.hidden_size, 1)
         
@@ -292,9 +301,41 @@ class BertSentClassifier(torch.nn.Module):
             hidden_states = outputs['last_hidden_state']
         else:
             hidden_states = outputs[0]
+
+        # Get CLS token representation
+        cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
         
-        # Get logits through forward pass
-        logits = self.forward_from_hidden(hidden_states, attention_mask)
+        # First attention mechanism
+        attention_weights = self.attention(hidden_states)  # [batch_size, seq_len, 1]
+        attention_weights = attention_weights.squeeze(-1)  # [batch_size, seq_len]
+        attention_weights = attention_weights.masked_fill(attention_mask == 0, -1e9)
+        attention_weights = F.softmax(attention_weights, dim=1)
+        context_vector = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)
+        
+        # Scale attention mechanism
+        scale_weights = self.scale_attention(hidden_states)  # [batch_size, seq_len, 1]
+        scale_weights = scale_weights.squeeze(-1)  # [batch_size, seq_len]
+        scale_weights = scale_weights.masked_fill(attention_mask == 0, -1e9)
+        scale_weights = F.softmax(scale_weights, dim=1)
+        scale_context = torch.bmm(scale_weights.unsqueeze(1), hidden_states).squeeze(1)
+        
+        # Combine all features
+        combined = torch.cat([cls_output, context_vector, scale_context], dim=1)  # [batch_size, hidden_size * 3]
+        
+        # Feature processing
+        hidden = self.dense(combined)  # [batch_size, hidden_size]
+        hidden = self.mish(hidden)
+        hidden = self.layer_norm(hidden)
+        
+        # Intermediate processing
+        hidden = self.intermediate(hidden)
+        hidden = self.mish(hidden)
+        hidden = self.batch_norm(hidden)
+        hidden = self.dropout(hidden)
+        
+        # Classification
+        logits = self.classifier(hidden)
+        
         return F.log_softmax(logits, dim=-1)
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
