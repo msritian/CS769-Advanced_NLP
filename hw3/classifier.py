@@ -1,4 +1,4 @@
-import time, random, numpy as np, argparse, sys, re, os
+import time, random, numpy as np, argparse, sys, re, os, math
 from types import SimpleNamespace
 
 import torch
@@ -47,29 +47,32 @@ class BertSentClassifier(torch.nn.Module):
         self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
         self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
-        # Enhanced architecture with residual connections and multi-head attention
+        # Enhanced architecture with multi-head self-attention
         hidden_size = config.hidden_size * 3  # CLS + weighted_pool + avg_pool
         
-        # Multi-head attention for better feature interaction
-        self.attention_heads = 4
-        self.attention_projection = torch.nn.Linear(hidden_size, hidden_size)
-        self.multi_head_attention = torch.nn.ModuleList([
-            torch.nn.Linear(hidden_size, config.hidden_size) 
-            for _ in range(self.attention_heads)
-        ])
+        # Self-attention mechanism
+        self.num_attention_heads = 4
+        self.attention_head_size = config.hidden_size // self.num_attention_heads
+        self.all_head_size = self.num_attention_heads * self.attention_head_size
         
-        # Main classification layers
+        # Query, Key, Value transformations
+        self.query = torch.nn.Linear(config.hidden_size, self.all_head_size)
+        self.key = torch.nn.Linear(config.hidden_size, self.all_head_size)
+        self.value = torch.nn.Linear(config.hidden_size, self.all_head_size)
+        
+        # Output transformations
         self.dense1 = torch.nn.Linear(hidden_size, config.hidden_size)
         self.dense2 = torch.nn.Linear(config.hidden_size, config.hidden_size)
         
-        # Normalization and regularization
+        # Normalization layers
         self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size)
         self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
         self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
         
-        # Varied dropout rates
+        # Dropout layers
         self.dropout1 = torch.nn.Dropout(0.2)
         self.dropout2 = torch.nn.Dropout(0.3)
+        self.attention_dropout = torch.nn.Dropout(0.1)
         
         self.activation = torch.nn.GELU()
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
@@ -105,24 +108,37 @@ class BertSentClassifier(torch.nn.Module):
         # Concatenate all representations
         combined = torch.cat([cls_output, weighted_output, mean_output], dim=-1)
         
-        # Project for attention
-        projected = self.attention_projection(combined)
+        batch_size = combined.size(0)
         
-        # Multi-head attention processing
-        attention_outputs = []
-        for head in self.multi_head_attention:
-            head_output = head(projected)
-            attention_outputs.append(head_output)
+        # Self-attention mechanism
+        mixed_query_layer = self.query(combined[:, :self.config.hidden_size])
+        mixed_key_layer = self.key(combined[:, :self.config.hidden_size])
+        mixed_value_layer = self.value(combined[:, :self.config.hidden_size])
+
+        # Reshape for attention computation
+        query_layer = mixed_query_layer.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
+        key_layer = mixed_key_layer.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
+        value_layer = mixed_value_layer.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
+
+        # Calculate attention scores
+        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
+        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+        attention_probs = F.softmax(attention_scores, dim=-1)
+        attention_probs = self.attention_dropout(attention_probs)
+
+        # Apply attention to values
+        context_layer = torch.matmul(attention_probs, value_layer)
+        context_layer = context_layer.transpose(1, 2).contiguous()
+        attention_output = context_layer.view(batch_size, -1, self.all_head_size)
         
-        # Combine attention heads
-        multi_head_output = torch.mean(torch.stack(attention_outputs), dim=0)
+        # Combine with original input
+        combined = torch.cat([attention_output, combined], dim=-1)
         
         # First transformation with residual
-        hidden = self.dense1(multi_head_output)
+        hidden = self.dense1(combined)
         hidden = self.batch_norm1(hidden)
         hidden = self.activation(hidden)
         hidden = self.dropout1(hidden)
-        hidden = hidden + multi_head_output[:, :self.config.hidden_size]  # Residual connection
         
         # Second transformation with residual
         residual = hidden
