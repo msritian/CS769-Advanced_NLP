@@ -77,9 +77,6 @@ class BertSentClassifier(torch.nn.Module):
         # Get logits through the classifier
         logits = self.classifier(hidden)
         
-        # Apply log softmax
-        logits = F.log_softmax(logits, dim=-1)
-        
         return logits
 
 # create a custom Dataset Class to be used for the dataloader
@@ -230,8 +227,37 @@ def train(args):
     model = model.to(device)
 
     lr = args.lr
-    ## specify the optimizer
-    optimizer = AdamW(model.parameters(), lr=lr)
+    ## specify the optimizer with layer-wise learning rate decay
+    # Group parameters by layers for different learning rates
+    no_decay = ['bias', 'LayerNorm.weight']
+    # Start with embeddings and classifier
+    layers = [model.bert.embeddings] + [model.classifier]
+    # Add encoder layers if available
+    if hasattr(model.bert, 'encoder') and hasattr(model.bert.encoder, 'layer'):
+        layers = [model.bert.embeddings] + list(model.bert.encoder.layer) + [model.classifier]
+    layers.reverse()  # Higher layers first
+    
+    # Create optimizer groups with different learning rates
+    optimizer_grouped_parameters = []
+    for i, layer in enumerate(layers):
+        # Learning rate decreases as we go deeper into the network
+        lr_factor = 0.95 ** (len(layers) - i - 1)
+        optimizer_grouped_parameters.extend([
+            {
+                'params': [p for n, p in layer.named_parameters() 
+                          if not any(nd in n for nd in no_decay)],
+                'weight_decay': 0.01,
+                'lr': lr * lr_factor
+            },
+            {
+                'params': [p for n, p in layer.named_parameters() 
+                          if any(nd in n for nd in no_decay)],
+                'weight_decay': 0.0,
+                'lr': lr * lr_factor
+            }
+        ])
+    
+    optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
     best_dev_acc = 0
 
     # Create learning rate scheduler with warmup
@@ -243,6 +269,14 @@ def train(args):
     
     # Lists to store model states for averaging
     model_states = []
+    
+    # Create loss function with label smoothing
+    smoothing = 0.1
+    try:
+        criterion = torch.nn.CrossEntropyLoss(reduction='sum', label_smoothing=smoothing)
+    except TypeError:
+        # Fallback for older PyTorch versions
+        criterion = torch.nn.CrossEntropyLoss(reduction='sum')
     
     ## run for the specified number of epochs
     for epoch in range(args.epochs):
@@ -259,7 +293,7 @@ def train(args):
 
             optimizer.zero_grad()
             logits = model(b_ids, b_mask)
-            loss = F.nll_loss(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+            loss = criterion(logits, b_labels.view(-1)) / args.batch_size
 
             loss.backward()
             
@@ -288,19 +322,23 @@ def train(args):
 
         print(f"epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
     
-    # Average the best model states
+        # Average the best model states
     if len(model_states) > 1:
-        avg_state = model_states[0]
-        for state in model_states[1:]:
-            for key in avg_state:
-                avg_state[key] += state[key]
-        for key in avg_state:
-            avg_state[key] /= len(model_states)
+        avg_state = {}
+        for key in model_states[0].keys():
+            try:
+                # Only average floating point parameters
+                if model_states[0][key].dtype in [torch.float32, torch.float64]:
+                    avg_state[key] = torch.stack([state[key] for state in model_states]).mean(dim=0).to(device)
+                else:
+                    # For non-floating point parameters (like ints), just keep the last one
+                    avg_state[key] = model_states[-1][key].to(device)
+            except:
+                # If any error occurs, just keep the last state for this parameter
+                avg_state[key] = model_states[-1][key].to(device)
         
         model.load_state_dict(avg_state)
         save_model(model, optimizer, args, config, args.filepath)
-
-
 def test(args):
     with torch.no_grad():
         # Prefer CUDA (NVIDIA) if available, otherwise use MPS (Apple), else CPU
