@@ -174,35 +174,23 @@ class BertSentClassifier(torch.nn.Module):
             for param in self.bert.parameters():
                 param.requires_grad = True
 
-        # Multi-head self-attention for better feature extraction
-        self.attention_heads = 4
-        self.attention = nn.ModuleList([
-            torch.nn.Linear(config.hidden_size, 1) 
-            for _ in range(self.attention_heads)
-        ])
+        # Simple but effective attention mechanism
+        self.attention = torch.nn.Linear(config.hidden_size, 1)
         
-        # Feature fusion layers
-        self.feature_fusion = torch.nn.Linear(config.hidden_size * (self.attention_heads + 2), config.hidden_size * 2)
+        # Two-stage classifier with proper dimensionality
+        hidden_size = config.hidden_size
+        self.dropout1 = torch.nn.Dropout(0.1)
+        self.dropout2 = torch.nn.Dropout(0.1)
         
-        # Three-stage hierarchical classifier
-        self.classifier1 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size * 2)
-        self.classifier2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
-        self.classifier_out = torch.nn.Linear(config.hidden_size, config.num_labels)
+        # First stage - maintain dimensionality
+        self.dense = torch.nn.Linear(hidden_size * 2, hidden_size)
+        self.layer_norm = torch.nn.LayerNorm(hidden_size)
         
-        # Enhanced normalization
-        self.layer_norm1 = torch.nn.LayerNorm(config.hidden_size * 2)
-        self.layer_norm2 = torch.nn.LayerNorm(config.hidden_size)
-        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
-        self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
+        # Output classifier
+        self.classifier = torch.nn.Linear(hidden_size, config.num_labels)
         
-        # Adaptive dropout
-        self.dropout1 = torch.nn.Dropout(0.2)  # Increased dropout for better regularization
-        self.dropout2 = torch.nn.Dropout(0.25)
-        self.feature_dropout = torch.nn.Dropout(0.15)
-        
-        # Advanced activation functions
+        # Activation
         self.gelu = torch.nn.GELU()
-        self.mish = lambda x: x * torch.tanh(F.softplus(x))
 
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs with gradient checkpointing for memory efficiency
