@@ -26,9 +26,7 @@ python classifier.py \
     --warmup_ratio 0.06 \
     --max_length 256 \
     --weight_decay 0.01 \
-    --seed 42 \
-    --use_vat \
-    --gradual_unfreeze
+    --seed 42
 CAMPUSID='9088915203'
 mkdir -p $CAMPUSID
 
@@ -78,8 +76,6 @@ python classifier.py \
     --max_length 128 \
     --weight_decay 0.01 \
     --seed 42 \
-    --use_vat \
-    --gradual_unfreeze \
     --train "data/${PREF}-train.txt" \
     --dev "data/${PREF}-dev.txt" \
     --test "data/${PREF}-test.txt" \

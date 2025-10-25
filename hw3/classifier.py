@@ -166,10 +166,10 @@ class BertSentClassifier(torch.nn.Module):
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.config = config
         
-        # Get total BERT layers for gradual unfreezing
-        self.bert_layers = [self.bert.embeddings] + list(self.bert.encoder.layer)
-        self.total_layers = len(self.bert_layers)
-        self.current_unfrozen_layer = self.total_layers - 1  # Start with last layer
+        # Get BERT layers for gradual unfreezing
+        self.bert_encoder_layers = list(self.bert.modules())
+        self.total_layers = len([m for m in self.bert_encoder_layers if isinstance(m, nn.TransformerEncoderLayer)])
+        self.current_unfrozen_layer = -1  # Start with no layers unfrozen
         
         # Set up parameters based on mode with discriminative fine-tuning
         if config.option == 'pretrain':
@@ -179,8 +179,9 @@ class BertSentClassifier(torch.nn.Module):
             # Initially freeze all layers
             for param in self.bert.parameters():
                 param.requires_grad = False
-            # Unfreeze last layer to start
-            self._unfreeze_bert_layer(self.current_unfrozen_layer)
+            # Unfreeze classifier layers
+            for param in self.classifier.parameters():
+                param.requires_grad = True
 
         # Advanced attention with multi-scale features
         self.attention = torch.nn.Linear(config.hidden_size, 1)
@@ -282,7 +283,7 @@ class BertSentClassifier(torch.nn.Module):
         logits = self.classifier(hidden)
         return logits
     
-    def forward(self, input_ids, attention_mask, training=True):
+    def forward(self, input_ids, attention_mask):
         # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         
@@ -291,11 +292,6 @@ class BertSentClassifier(torch.nn.Module):
             hidden_states = outputs['last_hidden_state']
         else:
             hidden_states = outputs[0]
-        
-        # Apply virtual adversarial training during training
-        if training:
-            r_vadv = self.compute_vat_perturbation(hidden_states, attention_mask)
-            hidden_states = hidden_states + r_vadv
         
         # Get logits through forward pass
         logits = self.forward_from_hidden(hidden_states, attention_mask)
