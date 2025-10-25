@@ -25,6 +25,140 @@ def seed_everything(seed=11711):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+# class BertSentClassifier(torch.nn.Module):
+#     def __init__(self, config):
+#         super(BertSentClassifier, self).__init__()
+#         self.num_labels = config.num_labels
+#         self.bert = BertModel.from_pretrained('bert-base-uncased')
+#         self.config = config
+
+#         # Set up parameters based on mode
+#         if config.option == 'pretrain':
+#             for param in self.bert.parameters():
+#                 param.requires_grad = False
+#         elif config.option == 'finetune':
+#             for param in self.bert.parameters():
+#                 param.requires_grad = True
+
+#         # Attention mechanism for sequence weighting
+#         self.attention = torch.nn.Linear(config.hidden_size, 1)
+        
+#         # Two-stage classifier with higher capacity
+#         self.classifier1 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size * 2)
+#         self.classifier2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
+#         self.classifier_out = torch.nn.Linear(config.hidden_size, config.num_labels)
+        
+#         # Normalization and regularization
+#         self.layer_norm1 = torch.nn.LayerNorm(config.hidden_size * 2)
+#         self.layer_norm2 = torch.nn.LayerNorm(config.hidden_size)
+#         self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
+#         self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
+        
+#         # Dropout layers with different rates
+#         self.dropout1 = torch.nn.Dropout(0.1)
+#         self.dropout2 = torch.nn.Dropout(0.15)
+        
+#         # Activation functions
+#         self.gelu = torch.nn.GELU()
+#         self.tanh = torch.nn.Tanh()
+        
+#         # Classifier with larger intermediate
+#         self.classifier_intermediate = torch.nn.Linear(config.hidden_size, config.hidden_size * 2)
+#         self.classifier = torch.nn.Linear(config.hidden_size * 2, config.num_labels)
+        
+#         # Activation functions
+#         self.gelu = torch.nn.GELU()
+#         self.tanh = torch.nn.Tanh()
+
+#     def forward(self, input_ids, attention_mask):
+#         # Get BERT outputs
+#         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        
+#         # Handle different possible output formats
+#         if isinstance(outputs, dict):
+#             hidden_states = outputs.get('last_hidden_state', outputs.get('hidden_states'))
+#         elif isinstance(outputs, tuple):
+#             hidden_states = outputs[0]
+#         else:
+#             hidden_states = outputs  # Assume it's the hidden states directly
+            
+#         # Get pooled output - either from pooler or use CLS token
+#         pooled_output = outputs.get('pooler_output', hidden_states[:, 0])
+
+#         # 1. CLS token representation
+#         cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
+        
+#         # 2. Weighted attention pooling over sequence
+#         attention_weights = torch.tanh(self.attention(hidden_states))
+#         attention_weights = attention_weights.squeeze(-1) * attention_mask
+#         attention_weights = F.softmax(attention_weights, dim=1)
+#         weighted_output = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)
+        
+#         # 3. Mean pooling
+#         mask = attention_mask.unsqueeze(-1).float()
+#         mean_output = (hidden_states * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+        
+#         # Concatenate all representations
+#         combined = torch.cat([cls_output, weighted_output, mean_output], dim=-1)
+        
+#         # 1. Get BERT outputs with proper handling
+#         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+#         hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
+        
+#         # 2. CLS token representation
+#         cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
+        
+#         # 3. Attention-weighted pooling
+#         attention_weights = torch.tanh(self.attention(hidden_states))  # [batch_size, seq_len, 1]
+#         attention_weights = attention_weights.squeeze(-1) * attention_mask  # Apply mask
+#         attention_weights = F.softmax(attention_weights, dim=1)  # [batch_size, seq_len]
+#         weighted_output = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)  # [batch_size, hidden_size]
+        
+#         # 4. Average pooling
+#         mask_expanded = attention_mask.unsqueeze(-1).float()  # [batch_size, seq_len, 1]
+#         sum_embeddings = (hidden_states * mask_expanded).sum(1)  # [batch_size, hidden_size]
+#         avg_embeddings = sum_embeddings / mask_expanded.sum(1).clamp(min=1e-9)  # [batch_size, hidden_size]
+        
+#         # Global attention over the local contexts
+#         global_weights = self.global_attention(context)  # [batch_size, seq_len, 1]
+#         global_weights = global_weights.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
+#         global_weights = F.softmax(global_weights, dim=1)
+#         global_context = torch.sum(global_weights * context, dim=1)  # [batch_size, hidden_size]
+        
+#         # Get CLS token and mean pooling
+#         cls_output = hidden_states[:, 0]
+#         mean_output = (hidden_states * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1).clamp(min=1e-9)
+        
+#         # Combine all representations
+#         combined = torch.cat([cls_output, local_context, global_context, mean_output], dim=1)  # [batch_size, hidden_size*4]
+        
+#         # First dense transformation
+#         hidden = self.dropout1(combined)
+#         hidden = self.dense1(hidden)
+#         hidden = self.layer_norm2(hidden)
+#         hidden = self.batch_norm1(hidden)
+#         hidden = self.gelu(hidden)
+        
+#         # Second dense transformation
+#         hidden = self.dropout2(hidden)
+#         hidden = self.dense2(hidden)
+#         hidden = self.layer_norm1(hidden)
+#         hidden = self.batch_norm2(hidden)
+#         hidden = self.gelu(hidden)
+        
+#         # Classification with intermediate layer
+#         hidden = self.classifier_intermediate(hidden)
+#         hidden = self.gelu(hidden)
+#         hidden = self.dropout2(hidden)
+#         logits = self.classifier(hidden)
+        
+#         return F.log_softmax(logits, dim=-1)
+        
+#         # Apply log softmax for numerical stability
+#         logits = F.log_softmax(logits, dim=-1)
+        
+#         return logits
+
 class BertSentClassifier(torch.nn.Module):
     def __init__(self, config):
         super(BertSentClassifier, self).__init__()
@@ -32,6 +166,7 @@ class BertSentClassifier(torch.nn.Module):
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.config = config
 
+        # Set up parameters based on mode
         if config.option == 'pretrain':
             for param in self.bert.parameters():
                 param.requires_grad = False
@@ -39,7 +174,7 @@ class BertSentClassifier(torch.nn.Module):
             for param in self.bert.parameters():
                 param.requires_grad = True
 
-        # Enhanced architecture for CFIMDB
+        # Attention mechanism for sequence weighting
         self.attention = torch.nn.Linear(config.hidden_size, 1)
         
         # Two-stage classifier with higher capacity
@@ -50,58 +185,12 @@ class BertSentClassifier(torch.nn.Module):
         # Normalization and regularization
         self.layer_norm1 = torch.nn.LayerNorm(config.hidden_size * 2)
         self.layer_norm2 = torch.nn.LayerNorm(config.hidden_size)
-        self.dropout = torch.nn.Dropout(0.1)
-        
-        # Activation
-        self.gelu = torch.nn.GELU()
-
-        # Set up parameters based on mode
-        if config.option == 'pretrain':
-            for param in self.bert.parameters():
-                param.requires_grad = False
-        elif config.option == 'finetune':
-            for param in self.bert.parameters():
-                param.requires_grad = True
-
-        # Multi-head attention for weighted pooling
-        self.attention = torch.nn.Linear(config.hidden_size, 1)
-        
-        # Improved architecture with regularization
-        self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
-        self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
-        
-        # Enhanced architecture for CFIMDB
-        self.hidden_size = config.hidden_size
-        
-        # Multi-head self attention for better long sequence handling
-        self.num_heads = 8
-        self.head_dim = config.hidden_size // self.num_heads
-        self.attention_query = torch.nn.Linear(config.hidden_size, config.hidden_size)
-        self.attention_key = torch.nn.Linear(config.hidden_size, config.hidden_size)
-        self.attention_value = torch.nn.Linear(config.hidden_size, config.hidden_size)
-        self.attention_out = torch.nn.Linear(config.hidden_size, config.hidden_size)
-        
-        # Hierarchical pooling
-        self.local_attention = torch.nn.Linear(config.hidden_size, 1)
-        self.global_attention = torch.nn.Linear(config.hidden_size, 1)
-        
-        # Feature transformation layers
-        self.dense1 = torch.nn.Linear(config.hidden_size * 4, config.hidden_size * 2)  # Increased for better capacity
-        self.dense2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
-        
-        # Normalization and regularization
-        self.layer_norm1 = torch.nn.LayerNorm(config.hidden_size)
-        self.layer_norm2 = torch.nn.LayerNorm(config.hidden_size * 2)
         self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
         self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
         
-        self.dropout_attn = torch.nn.Dropout(0.1)  # Attention dropout
+        # Dropout layers with different rates
         self.dropout1 = torch.nn.Dropout(0.1)
-        self.dropout2 = torch.nn.Dropout(0.1)
-        
-        # Classifier with larger intermediate
-        self.classifier_intermediate = torch.nn.Linear(config.hidden_size, config.hidden_size * 2)
-        self.classifier = torch.nn.Linear(config.hidden_size * 2, config.num_labels)
+        self.dropout2 = torch.nn.Dropout(0.15)
         
         # Activation functions
         self.gelu = torch.nn.GELU()
@@ -110,91 +199,38 @@ class BertSentClassifier(torch.nn.Module):
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
         
-        # Handle different possible output formats
-        if isinstance(outputs, dict):
-            hidden_states = outputs.get('last_hidden_state', outputs.get('hidden_states'))
-        elif isinstance(outputs, tuple):
-            hidden_states = outputs[0]
-        else:
-            hidden_states = outputs  # Assume it's the hidden states directly
-            
-        # Get pooled output - either from pooler or use CLS token
-        pooled_output = outputs.get('pooler_output', hidden_states[:, 0])
-
         # 1. CLS token representation
         cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
         
-        # 2. Weighted attention pooling over sequence
-        attention_weights = torch.tanh(self.attention(hidden_states))
-        attention_weights = attention_weights.squeeze(-1) * attention_mask
-        attention_weights = F.softmax(attention_weights, dim=1)
-        weighted_output = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)
-        
-        # 3. Mean pooling
-        mask = attention_mask.unsqueeze(-1).float()
-        mean_output = (hidden_states * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
-        
-        # Concatenate all representations
-        combined = torch.cat([cls_output, weighted_output, mean_output], dim=-1)
-        
-        # 1. Get BERT outputs with proper handling
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
-        
-        # 2. CLS token representation
-        cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
-        
-        # 3. Attention-weighted pooling
+        # 2. Attention weighted representation
         attention_weights = torch.tanh(self.attention(hidden_states))  # [batch_size, seq_len, 1]
-        attention_weights = attention_weights.squeeze(-1) * attention_mask  # Apply mask
-        attention_weights = F.softmax(attention_weights, dim=1)  # [batch_size, seq_len]
-        weighted_output = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)  # [batch_size, hidden_size]
+        attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
+        attention_weights = F.softmax(attention_weights, dim=1)
+        weighted_output = torch.bmm(attention_weights.transpose(1, 2), hidden_states).squeeze(1)  # [batch_size, hidden_size]
         
-        # 4. Average pooling
-        mask_expanded = attention_mask.unsqueeze(-1).float()  # [batch_size, seq_len, 1]
-        sum_embeddings = (hidden_states * mask_expanded).sum(1)  # [batch_size, hidden_size]
-        avg_embeddings = sum_embeddings / mask_expanded.sum(1).clamp(min=1e-9)  # [batch_size, hidden_size]
+        # 3. Combine representations
+        combined = torch.cat([cls_output, weighted_output], dim=1)  # [batch_size, hidden_size*2]
         
-        # Global attention over the local contexts
-        global_weights = self.global_attention(context)  # [batch_size, seq_len, 1]
-        global_weights = global_weights.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
-        global_weights = F.softmax(global_weights, dim=1)
-        global_context = torch.sum(global_weights * context, dim=1)  # [batch_size, hidden_size]
-        
-        # Get CLS token and mean pooling
-        cls_output = hidden_states[:, 0]
-        mean_output = (hidden_states * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1).clamp(min=1e-9)
-        
-        # Combine all representations
-        combined = torch.cat([cls_output, local_context, global_context, mean_output], dim=1)  # [batch_size, hidden_size*4]
-        
-        # First dense transformation
+        # 4. First classification stage
         hidden = self.dropout1(combined)
-        hidden = self.dense1(hidden)
-        hidden = self.layer_norm2(hidden)
+        hidden = self.classifier1(hidden)
+        hidden = self.layer_norm1(hidden)
         hidden = self.batch_norm1(hidden)
         hidden = self.gelu(hidden)
         
-        # Second dense transformation
+        # 5. Second classification stage
         hidden = self.dropout2(hidden)
-        hidden = self.dense2(hidden)
-        hidden = self.layer_norm1(hidden)
+        hidden = self.classifier2(hidden)
+        hidden = self.layer_norm2(hidden)
         hidden = self.batch_norm2(hidden)
         hidden = self.gelu(hidden)
         
-        # Classification with intermediate layer
-        hidden = self.classifier_intermediate(hidden)
-        hidden = self.gelu(hidden)
-        hidden = self.dropout2(hidden)
-        logits = self.classifier(hidden)
+        # 6. Output layer
+        logits = self.classifier_out(hidden)
         
         return F.log_softmax(logits, dim=-1)
-        
-        # Apply log softmax for numerical stability
-        logits = F.log_softmax(logits, dim=-1)
-        
-        return logits
 
 # create a custom Dataset Class to be used for the dataloader
 class BertDataset(Dataset):
