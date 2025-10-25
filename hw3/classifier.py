@@ -207,7 +207,11 @@ class BertSentClassifier(torch.nn.Module):
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs with gradient checkpointing for memory efficiency
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        hidden_states = outputs[0]  # [batch_size, seq_len, hidden_size]
+        # Handle different output formats (dict or tuple)
+        if isinstance(outputs, dict):
+            hidden_states = outputs['last_hidden_state']
+        else:
+            hidden_states = outputs[0]  # [batch_size, seq_len, hidden_size]
         
         # Multi-head attention processing
         attention_outputs = []
@@ -231,59 +235,26 @@ class BertSentClassifier(torch.nn.Module):
         combined = torch.cat([cls_output, mean_output, attention_concat], dim=-1)
         
         # Feature fusion with skip connection
-        fused = self.feature_fusion(combined)
+        fused = self.feature_fusion(combined)  # [batch_size, hidden_size * 2]
         fused = self.feature_dropout(fused)
         fused = self.layer_norm1(fused)
         
         # First classification stage with residual connection
-        hidden = self.classifier1(fused)
+        hidden = self.classifier1(fused)  # [batch_size, hidden_size * 2]
         hidden = self.mish(hidden)
-        hidden = self.batch_norm1(hidden)
+        hidden = self.batch_norm1(hidden.contiguous())  # Fixed contiguous tensor for batch norm
         hidden = self.dropout1(hidden)
-        hidden = hidden + fused  # residual connection
+        hidden = hidden + fused  # Residual connection [batch_size, hidden_size * 2]
         
         # Second classification stage
-        hidden = self.classifier2(hidden)
+        hidden = self.classifier2(hidden)  # [batch_size, hidden_size]
         hidden = self.mish(hidden)
         hidden = self.layer_norm2(hidden)
-        hidden = self.batch_norm2(hidden)
+        hidden = self.batch_norm2(hidden.contiguous())  # Fixed contiguous tensor for batch norm
         hidden = self.dropout2(hidden)
         
         # Final classification
-        logits = self.classifier_out(hidden)
-        
-        return F.log_softmax(logits, dim=-1)
-        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
-        
-        # 1. CLS token representation
-        cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
-        
-        # 2. Attention weighted representation
-        attention_weights = torch.tanh(self.attention(hidden_states))  # [batch_size, seq_len, 1]
-        attention_weights = attention_weights.masked_fill(attention_mask.unsqueeze(-1) == 0, -1e9)
-        attention_weights = F.softmax(attention_weights, dim=1)
-        weighted_output = torch.bmm(attention_weights.transpose(1, 2), hidden_states).squeeze(1)  # [batch_size, hidden_size]
-        
-        # 3. Combine representations
-        combined = torch.cat([cls_output, weighted_output], dim=1)  # [batch_size, hidden_size*2]
-        
-        # 4. First classification stage
-        hidden = self.dropout1(combined)
-        hidden = self.classifier1(hidden)
-        hidden = self.layer_norm1(hidden)
-        hidden = self.batch_norm1(hidden)
-        hidden = self.gelu(hidden)
-        
-        # 5. Second classification stage
-        hidden = self.dropout2(hidden)
-        hidden = self.classifier2(hidden)
-        hidden = self.layer_norm2(hidden)
-        hidden = self.batch_norm2(hidden)
-        hidden = self.gelu(hidden)
-        
-        # 6. Output layer
-        logits = self.classifier_out(hidden)
+        logits = self.classifier_out(hidden)  # [batch_size, num_labels]
         
         return F.log_softmax(logits, dim=-1)
 
