@@ -63,53 +63,40 @@ class BertSentClassifier(torch.nn.Module):
         self.temp = nn.Parameter(torch.ones([]) * 0.07)
 
     def forward(self, input_ids, attention_mask):
-        # Random token masking during fine-tuning (15% probability)
-        if self.training and self.config.option == 'finetune':
-            mask_prob = torch.full(input_ids.shape, 0.15)
-            mask = torch.bernoulli(mask_prob).bool()
-            mask = mask & attention_mask.bool()  # Only mask non-padding tokens
-            input_ids = input_ids.clone()
-            input_ids[mask] = 103  # [MASK] token id
-
         # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        last_hidden_state = outputs['last_hidden_state']  # [batch_size, seq_len, hidden_size]
-        cls_output = last_hidden_state[:, 0]  # [batch_size, hidden_size]
+        hidden_states = outputs[0]  # [batch_size, seq_len, hidden_size]
+        pooled_output = outputs[1] if len(outputs) > 1 else hidden_states[:, 0]
 
-        # Weighted attention pooling
-        attention_weights = self.attention(last_hidden_state)  # [batch_size, seq_len, 1]
-        attention_weights = torch.softmax(attention_weights, dim=1)
-        attention_weights = attention_weights * attention_mask.unsqueeze(-1)
-        attention_weights = attention_weights / (attention_weights.sum(dim=1, keepdim=True) + 1e-8)
-        weighted_output = (last_hidden_state * attention_weights).sum(dim=1)  # [batch_size, hidden_size]
-
-        # Average pooling
-        mask = attention_mask.unsqueeze(-1)  # [batch_size, seq_len, 1]
-        avg_output = (last_hidden_state * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
-
-        # Combine all representations
-        combined = torch.cat([cls_output, weighted_output, avg_output], dim=-1)
+        # 1. CLS token representation
+        cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
         
-        # Enhanced forward pass
+        # 2. Weighted attention pooling over sequence
+        attention_weights = torch.tanh(self.attention(hidden_states))
+        attention_weights = attention_weights.squeeze(-1) * attention_mask
+        attention_weights = F.softmax(attention_weights, dim=1)
+        weighted_output = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)
+        
+        # 3. Mean pooling
+        mask = attention_mask.unsqueeze(-1).float()
+        mean_output = (hidden_states * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+        
+        # Concatenate all representations
+        combined = torch.cat([cls_output, weighted_output, mean_output], dim=-1)
+        
+        # Apply dropouts and transformations
         combined = self.dropout1(combined)
         hidden = self.dense(combined)
         hidden = self.batch_norm(hidden)
         hidden = self.activation(hidden)
-        hidden = self.layer_norm(hidden)  # Extra normalization
+        hidden = self.layer_norm(hidden)
         hidden = self.dropout2(hidden)
         
         # Get logits
         logits = self.classifier(hidden)
-
-        if self.training:
-            # Contrastive learning loss
-            normalized_hidden = F.normalize(hidden, dim=-1)
-            cosine_sim = torch.mm(normalized_hidden, normalized_hidden.t()) / self.temp
-            labels = torch.arange(cosine_sim.size(0)).to(cosine_sim.device)
-            contrastive_loss = F.cross_entropy(cosine_sim, labels)
-            
-            # Return both classification logits and contrastive loss
-            return logits, contrastive_loss
+        
+        # Apply log softmax for numerical stability
+        logits = F.log_softmax(logits, dim=-1)
         
         return logits
 
@@ -430,22 +417,37 @@ def test(args):
 
 def get_args():
     parser = argparse.ArgumentParser()
+    # Data arguments
     parser.add_argument("--train", type=str, default="data/cfimdb-train.txt")
     parser.add_argument("--dev", type=str, default="data/cfimdb-dev.txt")
     parser.add_argument("--test", type=str, default="data/cfimdb-test.txt")
-    parser.add_argument("--seed", type=int, default=11711)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--dev_out", type=str, required=True)
+    parser.add_argument("--test_out", type=str, required=True)
+    parser.add_argument("--filepath", type=str, required=True)
+
+    # Training arguments
     parser.add_argument("--option", type=str,
                         help='pretrain: the BERT parameters are frozen; finetune: BERT parameters are updated',
                         choices=('pretrain', 'finetune'), default="pretrain")
+    parser.add_argument("--seed", type=int, default=11711)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--use_gpu", action='store_true')
-    parser.add_argument("--lr", type=float, default=1e-5)
-    parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--max_length", type=int, default=512)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--warmup_ratio", type=float, default=0.06)
-    parser.add_argument("--grad_accumulation_steps", type=int, default=1)
-    parser.add_argument("--hidden_dropout_prob", type=float, default=0.1)
+    
+    # Optimization arguments
+    parser.add_argument("--lr", type=float, default=2e-5,
+                        help='Initial learning rate')
+    parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU',
+                        type=int, default=8)
+    parser.add_argument("--hidden_dropout_prob", type=float, default=0.1,
+                        help='Dropout probability for hidden layers')
+    parser.add_argument("--warmup_ratio", type=float, default=0.1,
+                        help='Ratio of warmup steps to total steps')
+    parser.add_argument("--grad_accumulation_steps", type=int, default=1,
+                        help='Number of steps to accumulate gradients')
+    parser.add_argument("--weight_decay", type=float, default=0.01,
+                        help='Weight decay coefficient')
+    parser.add_argument("--max_length", type=int, default=256,
+                        help='Maximum sequence length')
     parser.add_argument("--dev_out", type=str, default="cfimdb-dev-output.txt")
     parser.add_argument("--test_out", type=str, default="cfimdb-test-output.txt")
     parser.add_argument("--filepath", type=str, default=None)
