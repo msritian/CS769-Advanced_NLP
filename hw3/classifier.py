@@ -556,36 +556,54 @@ def train(args):
     model = model.to(device)
 
     lr = args.lr
-    ## specify the optimizer with weight decay differentiation
-    # Parameters that will use weight decay
-    decay_parameters = [p for n, p in model.named_parameters() 
-                       if not any(nd in n for nd in ['bias', 'LayerNorm.weight'])]
-    # Parameters that won't use weight decay
-    no_decay_parameters = [p for n, p in model.named_parameters() 
-                          if any(nd in n for nd in ['bias', 'LayerNorm.weight'])]
-    
-    # Verify we have parameters before creating groups
-    optimizer_grouped_parameters = []
-    if decay_parameters:
+    # Gradual unfreezing and discriminative learning rates
+    if args.discriminative_lr:
+        # Assign different learning rates to each BERT layer
+        optimizer_grouped_parameters = []
+        # BERT encoder layers
+        for i, layer in enumerate(model.bert.encoder.layer):
+            layer_lr = lr * (0.95 ** (model.total_layers - i - 1))
+            optimizer_grouped_parameters.append({
+                'params': layer.parameters(),
+                'weight_decay': 0.01,
+                'lr': layer_lr
+            })
+        # Embeddings
         optimizer_grouped_parameters.append({
-            'params': decay_parameters,
-            'weight_decay': 0.01
+            'params': model.bert.embeddings.parameters(),
+            'weight_decay': 0.01,
+            'lr': lr * 0.5
         })
-    if no_decay_parameters:
-        optimizer_grouped_parameters.append({
-            'params': no_decay_parameters,
-            'weight_decay': 0.0
-        })
-    
-    # Create optimizer groups with different learning rates
-    optimizer_grouped_parameters = []
-
-    
-    if not optimizer_grouped_parameters:
-        # Fallback if no parameters were found
-        optimizer = AdamW(model.parameters(), lr=lr)
-    else:
+        # Classifier and other head params
+        head_params = [p for n, p in model.named_parameters() if not n.startswith('bert.')]
+        if head_params:
+            optimizer_grouped_parameters.append({
+                'params': head_params,
+                'weight_decay': 0.01,
+                'lr': lr
+            })
         optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
+    else:
+        # Standard optimizer
+        decay_parameters = [p for n, p in model.named_parameters() 
+                           if not any(nd in n for nd in ['bias', 'LayerNorm.weight'])]
+        no_decay_parameters = [p for n, p in model.named_parameters() 
+                              if any(nd in n for nd in ['bias', 'LayerNorm.weight'])]
+        optimizer_grouped_parameters = []
+        if decay_parameters:
+            optimizer_grouped_parameters.append({
+                'params': decay_parameters,
+                'weight_decay': 0.01
+            })
+        if no_decay_parameters:
+            optimizer_grouped_parameters.append({
+                'params': no_decay_parameters,
+                'weight_decay': 0.0
+            })
+        if not optimizer_grouped_parameters:
+            optimizer = AdamW(model.parameters(), lr=lr)
+        else:
+            optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
     best_dev_acc = 0
     best_test_acc = 0
     patience = 2  # Number of epochs to wait for improvement
@@ -614,10 +632,12 @@ def train(args):
     
     ## run for the specified number of epochs
     for epoch in range(args.epochs):
+        # Gradual unfreezing: unfreeze one more BERT layer each epoch if enabled
+        if hasattr(args, 'gradual_unfreeze') and args.gradual_unfreeze:
+            model.unfreeze_next_layer()
         # Clear GPU memory at the start of each epoch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
         model.train()
         train_loss = 0
         num_batches = 0
@@ -636,7 +656,7 @@ def train(args):
             # Forward pass
             logits = model(b_ids, b_mask)
             loss = criterion(logits, b_labels.view(-1)) / args.grad_accumulation_steps
-            
+
             # Backward pass
             loss.backward()
 
