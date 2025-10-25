@@ -47,35 +47,30 @@ class BertSentClassifier(torch.nn.Module):
         self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
         self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
-        # Enhanced architecture with multi-head self-attention
-        hidden_size = config.hidden_size * 3  # CLS + weighted_pool + avg_pool
+        # Simplified but effective architecture
+        self.hidden_size = config.hidden_size
         
-        # Self-attention mechanism
-        self.num_attention_heads = 4
-        self.attention_head_size = config.hidden_size // self.num_attention_heads
-        self.all_head_size = self.num_attention_heads * self.attention_head_size
+        # Attention for sequence weighting
+        self.attention = torch.nn.Linear(config.hidden_size, 1)
         
-        # Query, Key, Value transformations
-        self.query = torch.nn.Linear(config.hidden_size, self.all_head_size)
-        self.key = torch.nn.Linear(config.hidden_size, self.all_head_size)
-        self.value = torch.nn.Linear(config.hidden_size, self.all_head_size)
+        # First transformation with larger hidden size
+        self.dense1 = torch.nn.Linear(config.hidden_size * 3, config.hidden_size * 2)
+        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size * 2)
         
-        # Output transformations
-        self.dense1 = torch.nn.Linear(hidden_size, config.hidden_size)
-        self.dense2 = torch.nn.Linear(config.hidden_size, config.hidden_size)
-        
-        # Normalization layers
-        self.batch_norm1 = torch.nn.BatchNorm1d(config.hidden_size)
+        # Second transformation
+        self.dense2 = torch.nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.batch_norm2 = torch.nn.BatchNorm1d(config.hidden_size)
+        
+        # Final layers
         self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
-        
-        # Dropout layers
         self.dropout1 = torch.nn.Dropout(0.2)
-        self.dropout2 = torch.nn.Dropout(0.3)
-        self.attention_dropout = torch.nn.Dropout(0.1)
+        self.dropout2 = torch.nn.Dropout(0.2)
         
-        self.activation = torch.nn.GELU()
+        # Classifier
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
+        
+        # Activation
+        self.activation = torch.nn.GELU()
 
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs
@@ -108,51 +103,44 @@ class BertSentClassifier(torch.nn.Module):
         # Concatenate all representations
         combined = torch.cat([cls_output, weighted_output, mean_output], dim=-1)
         
-        batch_size = combined.size(0)
+        # 1. Get BERT outputs with proper handling
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs['last_hidden_state']
         
-        # Self-attention mechanism
-        mixed_query_layer = self.query(combined[:, :self.config.hidden_size])
-        mixed_key_layer = self.key(combined[:, :self.config.hidden_size])
-        mixed_value_layer = self.value(combined[:, :self.config.hidden_size])
-
-        # Reshape for attention computation
-        query_layer = mixed_query_layer.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-        key_layer = mixed_key_layer.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-        value_layer = mixed_value_layer.view(batch_size, -1, self.num_attention_heads, self.attention_head_size).transpose(1, 2)
-
-        # Calculate attention scores
-        attention_scores = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-        attention_scores = attention_scores / math.sqrt(self.attention_head_size)
-        attention_probs = F.softmax(attention_scores, dim=-1)
-        attention_probs = self.attention_dropout(attention_probs)
-
-        # Apply attention to values
-        context_layer = torch.matmul(attention_probs, value_layer)
-        context_layer = context_layer.transpose(1, 2).contiguous()
-        attention_output = context_layer.view(batch_size, -1, self.all_head_size)
+        # 2. CLS token representation
+        cls_output = hidden_states[:, 0]  # [batch_size, hidden_size]
         
-        # Combine with original input
-        combined = torch.cat([attention_output, combined], dim=-1)
+        # 3. Attention-weighted pooling
+        attention_weights = torch.tanh(self.attention(hidden_states))  # [batch_size, seq_len, 1]
+        attention_weights = attention_weights.squeeze(-1) * attention_mask  # Apply mask
+        attention_weights = F.softmax(attention_weights, dim=1)  # [batch_size, seq_len]
+        weighted_output = torch.bmm(attention_weights.unsqueeze(1), hidden_states).squeeze(1)  # [batch_size, hidden_size]
         
-        # First transformation with residual
-        hidden = self.dense1(combined)
+        # 4. Average pooling
+        mask_expanded = attention_mask.unsqueeze(-1).float()  # [batch_size, seq_len, 1]
+        sum_embeddings = (hidden_states * mask_expanded).sum(1)  # [batch_size, hidden_size]
+        avg_embeddings = sum_embeddings / mask_expanded.sum(1).clamp(min=1e-9)  # [batch_size, hidden_size]
+        
+        # 5. Combine all features
+        combined = torch.cat([cls_output, weighted_output, avg_embeddings], dim=1)  # [batch_size, hidden_size*3]
+        
+        # 6. First transformation
+        hidden = self.dropout1(combined)
+        hidden = self.dense1(hidden)
         hidden = self.batch_norm1(hidden)
         hidden = self.activation(hidden)
-        hidden = self.dropout1(hidden)
         
-        # Second transformation with residual
-        residual = hidden
+        # 7. Second transformation
+        hidden = self.dropout2(hidden)
         hidden = self.dense2(hidden)
         hidden = self.batch_norm2(hidden)
         hidden = self.activation(hidden)
-        hidden = self.dropout2(hidden)
-        hidden = hidden + residual  # Residual connection
         
-        # Final normalization
+        # 8. Final normalization and classification
         hidden = self.layer_norm(hidden)
-        
-        # Get logits
         logits = self.classifier(hidden)
+        
+        return F.log_softmax(logits, dim=-1)
         
         # Apply log softmax for numerical stability
         logits = F.log_softmax(logits, dim=-1)
@@ -340,16 +328,22 @@ def train(args):
     else:
         optimizer = AdamW(optimizer_grouped_parameters, lr=lr)
     best_dev_acc = 0
+    best_test_acc = 0
+    patience = 2  # Number of epochs to wait for improvement
+    patience_counter = 0
+    best_model_state = None
 
     # Create learning rate scheduler with warmup
     num_training_steps = len(train_dataloader) * args.epochs
-    num_warmup_steps = num_training_steps // 10  # 10% of training steps for warmup
+    num_warmup_steps = int(num_training_steps * args.warmup_ratio)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, 
                                                   total_steps=num_training_steps,
-                                                  pct_start=0.1)  # 10% warmup
+                                                  pct_start=args.warmup_ratio,
+                                                  anneal_strategy='linear')
     
-    # Lists to store model states for averaging
+    # For model averaging
     model_states = []
+    model_weights = []
     
     # Create loss function with label smoothing
     smoothing = 0.1
