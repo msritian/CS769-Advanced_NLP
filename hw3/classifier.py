@@ -32,22 +32,18 @@ class BertSentClassifier(torch.nn.Module):
         self.bert = BertModel.from_pretrained('bert-base-uncased')
         self.config = config
 
-        # Set up discriminative fine-tuning
+        # Set up parameters based on mode
         if config.option == 'pretrain':
             for param in self.bert.parameters():
                 param.requires_grad = False
         elif config.option == 'finetune':
-            # Apply different learning rates to different layers
-            for i, layer in enumerate(self.bert.encoder.layer):
-                lr_scale = 0.95 ** (self.bert.config.num_hidden_layers - i - 1)
-                for param in layer.parameters():
-                    param.requires_grad = True
-                    param.lr_scale = lr_scale
+            for param in self.bert.parameters():
+                param.requires_grad = True
 
         # Multi-head attention for weighted pooling
         self.attention = torch.nn.Linear(config.hidden_size, 1)
         
-        # Improved architecture
+        # Improved architecture with regularization
         self.dropout1 = torch.nn.Dropout(config.hidden_dropout_prob)
         self.dropout2 = torch.nn.Dropout(config.hidden_dropout_prob)
         
@@ -58,9 +54,6 @@ class BertSentClassifier(torch.nn.Module):
         self.layer_norm = torch.nn.LayerNorm(config.hidden_size)
         self.activation = torch.nn.GELU()
         self.classifier = torch.nn.Linear(config.hidden_size, config.num_labels)
-        
-        # Temperature parameter for contrastive learning
-        self.temp = nn.Parameter(torch.ones([]) * 0.07)
 
     def forward(self, input_ids, attention_mask):
         # Get BERT outputs
@@ -215,6 +208,7 @@ def train(args):
     # Prefer CUDA (NVIDIA) if available, otherwise use MPS (Apple), else CPU
     if args.use_gpu and torch.cuda.is_available():
         device = torch.device('cuda')
+        torch.cuda.empty_cache()  # Clear GPU memory
     elif args.use_gpu and torch.backends.mps.is_available():
         device = torch.device('mps')
     else:
