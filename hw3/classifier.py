@@ -221,17 +221,15 @@ class BertSentClassifier(torch.nn.Module):
         self.current_unfrozen_layer = self.total_layers - 1  # Start with the last layer unfrozen
 
     def _unfreeze_bert_layer(self, layer_idx):
-        """Unfreeze a specific BERT layer with discriminative learning rates"""
+        """Unfreeze a specific BERT layer with discriminative learning rates (custom model)"""
         if 0 <= layer_idx < self.total_layers:
-            layer = self.bert.encoder.layer[layer_idx]
+            layer = self.bert.bert_layers[layer_idx]
             for param in layer.parameters():
                 param.requires_grad = True
-            
             # Apply discriminative learning rates (lower for earlier layers)
-            base_lr = self.config.lr
+            base_lr = self.config.lr if hasattr(self.config, 'lr') else 2e-5
             layer_lr = base_lr * (0.95 ** (self.total_layers - layer_idx - 1))
-            
-            # Store layer-specific learning rate for optimizer
+            # Store layer-specific learning rate for optimizer (optional, for reference)
             for param in layer.parameters():
                 param.layer_lr = layer_lr
     
